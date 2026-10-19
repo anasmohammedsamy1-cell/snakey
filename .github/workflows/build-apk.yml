@@ -27,7 +27,7 @@ jobs:
       - name: Export APK
         run: |
           mkdir -p build
-          godot --headless --path . --export-release "Android" build/game.apk
+          godot --headless --path . --export-release "snake" build/game.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
