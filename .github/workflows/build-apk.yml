@@ -66,19 +66,19 @@ jobs:
           keytool \
             -genkeypair \
             -v \
-            -keystore "$RUNNER_TEMP/snakearena-release.keystore" \
-            -alias snakearena \
+            -keystore "$RUNNER_TEMP/shit-release.keystore" \
+            -alias shit \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
             -storepass android \
             -keypass android \
-            -dname "CN=SnakeArena,O=SnakeArena,C=US"
+            -dname "CN=shit,O=shit,C=US"
 
       - name: Export APK
         env:
-          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ runner.temp }}/snakearena-release.keystore
-          GODOT_ANDROID_KEYSTORE_RELEASE_USER: snakearena
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ runner.temp }}/shit-release.keystore
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: shit
           GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: android
         run: |
           mkdir -p build
@@ -86,13 +86,13 @@ jobs:
           godot \
             --headless \
             --path . \
-            --export-release "snake" \
-            build/snakearena.apk
+            --export-release "shit" \
+            build/shit.apk
 
       - name: Verify APK
         run: |
-          test -f build/snakearena.apk
-          ls -lh build/snakearena.apk
+          test -f build/shit.apk
+          ls -lh build/shit.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
