@@ -40,10 +40,23 @@ jobs:
 
       - name: Verify Godot
         run: |
+          echo "Godot version:"
           godot --version
-          test -f project.godot
-          test -f export_presets.cfg
 
+          echo "Checking project files..."
+
+          test -f project.godot || {
+            echo "ERROR: project.godot not found in repository root"
+            exit 1
+          }
+
+          test -f export_presets.cfg || {
+            echo "ERROR: export_presets.cfg not found in repository root"
+            exit 1
+          }
+
+          echo "All checks passed!"
+          
       - name: Verify Android preset
         run: |
           grep -q 'name="snake"' export_presets.cfg
