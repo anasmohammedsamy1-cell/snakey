@@ -59,7 +59,7 @@ jobs:
           
       - name: Verify Android preset
         run: |
-          grep -q 'name="snake"' export_presets.cfg
+          grep -q 'name="shit"' export_presets.cfg
 
       - name: Generate release keystore
         run: |
