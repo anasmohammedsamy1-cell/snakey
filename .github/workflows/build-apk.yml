@@ -97,6 +97,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: SnakeArena-Android-APK
-          path: build/snakearena.apk
+          name: shit-Android-APK
+          path: build/shit.apk
           if-no-files-found: error
