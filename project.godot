@@ -14,16 +14,25 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="Snake Arena"
-run/main_scene="res://scenes/menu.tscn"
-config/quit_on_go_back=false
+config/name="Last One Falls!"
+config/description="Funny 3D LAN multiplayer party game. Jump, push and survive the rotating hammers. آخر واحد يقع!"
+run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
-config/icon="res://icon.svg"
+boot_splash/bg_color=Color(0.23, 0.58, 0.98, 1)
+config/icon="uid://dnyqkmabxeimb"
+
+[audio]
+
+driver/enable_input=true
 
 [autoload]
 
-Game="*res://scripts/game_state.gd"
-Net="*res://scripts/net.gd"
+SettingsManager="*res://scripts/settings_manager.gd"
+SaveManager="*res://scripts/save_manager.gd"
+AudioManager="*res://scripts/audio_manager.gd"
+NetworkManager="*res://scripts/network_manager.gd"
+GameManager="*res://scripts/game_manager.gd"
+VoiceChat="*res://scripts/voice_chat.gd"
 
 [display]
 
@@ -31,6 +40,11 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[gui]
+
+theme/custom_font="res://assets/fonts/game_font.tres"
 
 [input_devices]
 
@@ -40,3 +54,7 @@ pointing/emulate_touch_from_mouse=true
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=1
+textures/default_filters/anisotropic_filtering_level=0

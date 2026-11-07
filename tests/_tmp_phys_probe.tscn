@@ -1,0 +1,10 @@
+[gd_scene load_steps=3 format=3]
+[ext_resource type="Script" path="res://tests/_tmp_phys_probe.gd" id="1"]
+[sub_resource type="BoxShape3D" id="box"]
+size = Vector3(40, 0.2, 40)
+[node name="Probe" type="Node3D"]
+script = ExtResource("1")
+[node name="Floor" type="StaticBody3D" parent="."]
+[node name="CS" type="CollisionShape3D" parent="Floor"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.1, 0)
+shape = SubResource("box")
