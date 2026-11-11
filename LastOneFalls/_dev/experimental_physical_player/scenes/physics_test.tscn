@@ -1,0 +1,44 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/character/physical_player.gd" id="1_physical_player"]
+
+[node name="PhysicsTest" type="Node3D"]
+
+[node name="Ground" type="StaticBody3D" parent="."]
+node_3d/name = "Ground"
+collision/layer = 1
+collision/mask = 3
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground"]
+node_3d/name = "CollisionShape3D"
+
+[node name="Ramp" type="StaticBody3D" parent="."]
+node_3d/name = "Ramp"
+transform = 1.0, 0.0, 0.0, 0.0, 0.707107, 0.707107, 0.0, -0.707107, 0.707107, 8.0, 0.5, 0.0
+collision/layer = 1
+collision/mask = 3
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ramp"]
+node_3d/name = "CollisionShape3D"
+
+[node name="Platform" type="StaticBody3D" parent="."]
+node_3d/name = "Platform"
+transform = 0.0, 0.0, -0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 8.0, 2.0, 0.0
+collision/layer = 1
+collision/mask = 3
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Platform"]
+node_3d/name = "CollisionShape3D"
+
+[node name="Player1" type="PhysicalPlayer" parent="."]
+node_3d/name = "Player1"
+script = ExtResource("1_physical_player")
+transform = 0.0, 0.0, -0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -4.0, 3.5, 0.0
+
+[node name="Player2" type="PhysicalPlayer" parent="."]
+node_3d/name = "Player2"
+script = ExtResource("1_physical_player")
+transform = 0.0, 0.0, -0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 4.0, 3.5, 0.0
+
+[node name="DebugLabel" type="Label3D" parent="."]
+node_3d/name = "DebugLabel"
+transform = 0.0, 0.0, -0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0, 0.0
+text = "Physics Test Scene - Two Physical Players"
+billboard = 2

@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://qhf6tf340j4i"]
+
+[ext_resource type="Script" uid="uid://lb6807n6jaji" path="res://tools/render_map_previews.gd" id="1"]
+
+[node name="RenderMapPreviews" type="Node3D" unique_id=1080382010]
+script = ExtResource("1")

@@ -1,0 +1,141 @@
+[gd_scene load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://scripts/tutorial.gd" id="1_tutorial"]
+[ext_resource type="Script" path="res://scripts/touch_controls.gd" id="2_touch"]
+
+[sub_resource type="BoxShape3D" id="FloorShape"]
+size = Vector3(30, 1, 30)
+
+[sub_resource type="StandardMaterial3D" id="FloorMaterial"]
+albedo_color = Color(0.28, 0.68, 0.72, 1)
+roughness = 0.8
+
+[sub_resource type="BoxMesh" id="FloorMesh"]
+material = SubResource("FloorMaterial")
+size = Vector3(30, 1, 30)
+
+[sub_resource type="BoxShape3D" id="WallShapeX"]
+size = Vector3(0.5, 3, 30)
+
+[sub_resource type="BoxShape3D" id="WallShapeZ"]
+size = Vector3(30, 3, 0.5)
+
+[sub_resource type="StandardMaterial3D" id="WallMaterial"]
+albedo_color = Color(0.35, 0.4, 0.68, 1)
+roughness = 0.8
+
+[sub_resource type="BoxMesh" id="WallMeshX"]
+material = SubResource("WallMaterial")
+size = Vector3(0.5, 3, 30)
+
+[sub_resource type="BoxMesh" id="WallMeshZ"]
+material = SubResource("WallMaterial")
+size = Vector3(30, 3, 0.5)
+
+[node name="Tutorial" type="Node3D"]
+script = ExtResource("1_tutorial")
+
+[node name="TutorialFloor" type="StaticBody3D" parent="."]
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TutorialFloor"]
+position = Vector3(0, -0.5, 0)
+shape = SubResource("FloorShape")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TutorialFloor"]
+position = Vector3(0, -0.5, 0)
+mesh = SubResource("FloorMesh")
+
+[node name="BoundaryWalls" type="Node3D" parent="."]
+
+[node name="West" type="StaticBody3D" parent="BoundaryWalls"]
+position = Vector3(-15, 1.5, 0)
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BoundaryWalls/West"]
+shape = SubResource("WallShapeX")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BoundaryWalls/West"]
+mesh = SubResource("WallMeshX")
+
+[node name="East" type="StaticBody3D" parent="BoundaryWalls"]
+position = Vector3(15, 1.5, 0)
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BoundaryWalls/East"]
+shape = SubResource("WallShapeX")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BoundaryWalls/East"]
+mesh = SubResource("WallMeshX")
+
+[node name="North" type="StaticBody3D" parent="BoundaryWalls"]
+position = Vector3(0, 1.5, -15)
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BoundaryWalls/North"]
+shape = SubResource("WallShapeZ")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BoundaryWalls/North"]
+mesh = SubResource("WallMeshZ")
+
+[node name="South" type="StaticBody3D" parent="BoundaryWalls"]
+position = Vector3(0, 1.5, 15)
+collision_layer = 1
+collision_mask = 0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="BoundaryWalls/South"]
+shape = SubResource("WallShapeZ")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="BoundaryWalls/South"]
+mesh = SubResource("WallMeshZ")
+
+[node name="TutorialUI" type="CanvasLayer" parent="."]
+layer = 10
+
+[node name="TouchControls" type="Control" parent="TutorialUI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("2_touch")
+
+[node name="Margin" type="MarginContainer" parent="TutorialUI"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Row" type="HBoxContainer" parent="TutorialUI/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+mouse_filter = 2
+
+[node name="ExitTutorial" type="Button" parent="TutorialUI/Margin/Row"]
+custom_minimum_size = Vector2(110, 54)
+layout_mode = 2
+size_flags_vertical = 4
+text = "Exit"
+
+[node name="MessagePanel" type="PanelContainer" parent="TutorialUI/Margin/Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+mouse_filter = 2
+
+[node name="Message" type="Label" parent="TutorialUI/Margin/Row/MessagePanel"]
+layout_mode = 2
+text = "Move to begin the tutorial"
+autowrap_mode = 3
+mouse_filter = 2

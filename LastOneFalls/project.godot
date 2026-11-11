@@ -1,0 +1,66 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
+[application]
+
+config/name="Last One Falls!"
+config/description="Funny 3D LAN multiplayer party game. Jump, push and survive the rotating hammers. آخر واحد يقع!"
+run/main_scene="res://scenes/main_menu.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+boot_splash/bg_color=Color(0.23, 0.58, 0.98, 1)
+config/icon="res://NewGlobalGameIcon.svg"
+
+[audio]
+
+driver/enable_input=true
+
+[autoload]
+
+SettingsManager="*res://scripts/settings_manager.gd"
+SaveManager="*res://scripts/save_manager.gd"
+AudioManager="*res://scripts/audio_manager.gd"
+NetworkManager="*res://scripts/network_manager.gd"
+GameManager="*res://scripts/game_manager.gd"
+VoiceChat="*res://scripts/voice_chat.gd"
+CharacterAnimation="*res://scripts/character/character_animation_scheduler.gd"
+MCPRuntimeProbe="*uid://ccjof6txapfes"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+
+[gui]
+
+theme/custom_font="res://assets/fonts/game_font.tres"
+
+[input_devices]
+
+pointing/emulate_touch_from_mouse=true
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=1
+textures/default_filters/anisotropic_filtering_level=0
