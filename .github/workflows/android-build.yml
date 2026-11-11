@@ -3,6 +3,8 @@ name: Android APK Build
 
 on:
   push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -14,31 +16,33 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. Download project
+      # 1. Checkout project
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install Java
+      # 2. Setup Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Install Android SDK
+      # 3. Setup Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
+      # 4. Install required Android packages
       - name: Install Android SDK packages
         run: |
           sdkmanager --install \
-            "platform-tools" \
             "build-tools;35.0.1" \
-            "platforms;35" \
+            "platforms;android-35" \
             "cmake;3.10.2.4988404" \
             "ndk;28.1.13356709"
 
-      # 4. Install Godot and matching export templates
+      # 5. Setup Godot 4.7
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2.4.3
         with:
@@ -46,18 +50,18 @@ jobs:
           use-dotnet: false
           include-templates: true
 
-      # 5. Verify environment
-      - name: Verify tools
+      # 6. Verify environment
+      - name: Verify environment
         run: |
           godot --version
           java -version
-          echo "Android SDK: $ANDROID_HOME"
+          sdkmanager --version
 
-      # 6. Generate temporary debug keystore
+      # 7. Generate temporary debug keystore
       - name: Generate debug keystore
         run: |
           keytool -genkeypair \
-            -keystore "$RUNNER_TEMP/android-debug.keystore" \
+            -keystore "$RUNNER_TEMP/debug.keystore" \
             -storepass android \
             -alias androiddebugkey \
             -keypass android \
@@ -66,16 +70,16 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/android-debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
-      # 7. Import project resources
+      # 8. Import project
       - name: Import Godot project
         run: |
           godot --headless --editor --path . --import
 
-      # 8. Export APK
+      # 9. Export APK
       - name: Export Android APK
         run: |
           mkdir -p export
@@ -85,7 +89,7 @@ jobs:
             --export-debug "Android" \
             export/LastOneFalls.apk
 
-      # 9. Verify APK architectures
+      # 10. Verify APK
       - name: Verify APK
         run: |
           set -euo pipefail
@@ -99,10 +103,12 @@ jobs:
           grep -q "lib/armeabi-v7a/" apk_contents.txt
           grep -q "lib/arm64-v8a/" apk_contents.txt
 
-          echo "APK successfully contains both ARM architectures!"
+          echo "Both ARM architectures verified!"
 
-      # 10. Upload APK
-      - name: Upload APK
+          ls -lh "$APK"
+
+      # 11. Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: LastOneFalls-Android-APK
