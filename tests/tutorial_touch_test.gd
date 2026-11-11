@@ -28,7 +28,7 @@ func run_test() -> void:
 	get_tree().root.add_child(tutorial)
 	await wait(0.5)
 	var control = tutorial.touch_controls
-	var joy: Vector2 = control._joy_rest
+	var joy: Vector2 = control._joy_center
 	touch(0, joy, true)
 	await wait(0.1)
 	drag(0, joy + Vector2(0, -75), Vector2(0, -75))
@@ -42,7 +42,7 @@ func run_test() -> void:
 	touch(1, jump, false)
 	await wait(0.15)
 	check(tutorial.step == 2, "touch jump advances lesson")
-	var push: Vector2 = control._push_center
+	var push: Vector2 = control._punch_center
 	touch(2, push, true)
 	await wait(0.16)
 	touch(2, push, false)

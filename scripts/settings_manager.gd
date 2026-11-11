@@ -14,6 +14,7 @@ const PRESET_LOW := 0
 const PRESET_MEDIUM := 1
 const PRESET_HIGH := 2
 const PRESET_CUSTOM := 3
+const PRESET_POTATO := 4      # extremely low-end PCs: 0.5 render scale, no shadows/MSAA/effects
 
 const GRAPHICS_KEYS := ["render_scale", "shadows", "effects", "msaa"]
 
@@ -45,6 +46,10 @@ var defaults := {
 	"button_opacity": 0.75,
 	"controls_swapped": false,
 	"vibration": true,
+	"aim_line": true,              # punch aim line while charging
+	"hitstop": true,               # short freeze on strong hits
+	"screen_shake": true,          # trauma camera shake + dash FOV kick
+	"rotate_maps": true,           # automatically play another map after every match
 	"language": "en",
 	"voice_enabled": true,
 	"voice_open_mic": true,        # false = push to talk
@@ -105,6 +110,11 @@ func apply_preset(preset: int) -> void:
 			set_setting("shadows", true, false)
 			set_setting("effects", true, false)
 			set_setting("msaa", true, false)
+		PRESET_POTATO:
+			set_setting("render_scale", 0.5, false)
+			set_setting("shadows", false, false)
+			set_setting("effects", false, false)
+			set_setting("msaa", false, false)
 		_:
 			set_setting("render_scale", 1.0, false)
 			set_setting("shadows", true, false)

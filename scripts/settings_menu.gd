@@ -77,14 +77,20 @@ func _build() -> void:
 	var compact_settings := get_viewport().get_visible_rect().size.x < 760.0
 	preset_row.vertical = compact_settings
 	preset_row.add_child(Cartoon.label(GameManager.t("preset"), 20, Cartoon.WHITE, HORIZONTAL_ALIGNMENT_LEFT))
-	var names := [GameManager.t("low"), GameManager.t("medium"), GameManager.t("high")]
-	for i in 3:
-		var b := Cartoon.button(names[i], _on_preset.bind(i), Cartoon.STYLE_NORMAL, Vector2(0 if compact_settings else 130, 52))
+	var names := [GameManager.t("low"), GameManager.t("medium"), GameManager.t("high"), GameManager.t("potato")]
+	var preset_ids := [SettingsManager.PRESET_LOW, SettingsManager.PRESET_MEDIUM, SettingsManager.PRESET_HIGH, SettingsManager.PRESET_POTATO]
+	for i in names.size():
+		var b := Cartoon.button(names[i], _on_preset.bind(preset_ids[i]), Cartoon.STYLE_NORMAL, Vector2(0 if compact_settings else 130, 52))
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.toggle_mode = true
+		b.set_meta("preset", preset_ids[i])
 		preset_row.add_child(b)
 		_preset_buttons.append(b)
 	list.add_child(preset_row)
+	var potato_desc := Cartoon.label(GameManager.t("potato_desc"), 15, Cartoon.INK_SOFT)
+	potato_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	potato_desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_child(potato_desc)
 	var render_row := _slider_row(GameManager.t("render_scale"), 0.5, 1.0, 0.05, float(SettingsManager.get_setting("render_scale")), func(v: float) -> void: SettingsManager.set_setting("render_scale", v))
 	_render_slider = render_row.get_node("Slider")
 	list.add_child(render_row)
@@ -138,6 +144,10 @@ func _build() -> void:
 	list.add_child(_make_section(GameManager.t("gameplay")))
 	list.add_child(_toggle_row(GameManager.t("invert_camera"), bool(SettingsManager.get_setting("invert_camera_y")), func(v: bool) -> void: SettingsManager.set_setting("invert_camera_y", v)))
 	list.add_child(_toggle_row(GameManager.t("vibration"), bool(SettingsManager.get_setting("vibration")), func(v: bool) -> void: SettingsManager.set_setting("vibration", v)))
+	list.add_child(_toggle_row(GameManager.t("aim_line"), bool(SettingsManager.get_setting("aim_line")), func(v: bool) -> void: SettingsManager.set_setting("aim_line", v)))
+	list.add_child(_toggle_row(GameManager.t("hitstop"), bool(SettingsManager.get_setting("hitstop")), func(v: bool) -> void: SettingsManager.set_setting("hitstop", v)))
+	list.add_child(_toggle_row(GameManager.t("screen_shake"), bool(SettingsManager.get_setting("screen_shake")), func(v: bool) -> void: SettingsManager.set_setting("screen_shake", v)))
+	list.add_child(_toggle_row(GameManager.t("rotate_maps"), bool(SettingsManager.get_setting("rotate_maps")), func(v: bool) -> void: SettingsManager.set_setting("rotate_maps", v)))
 	var lang_row := BoxContainer.new()
 	lang_row.vertical = get_viewport().get_visible_rect().size.x < 560.0
 	lang_row.add_theme_constant_override("separation", 8)
@@ -241,7 +251,7 @@ func _refresh_preset_buttons() -> void:
 	var current := int(SettingsManager.get_setting("graphics_preset"))
 	for i in _preset_buttons.size():
 		var b: Button = _preset_buttons[i]
-		b.set_pressed_no_signal(i == current)
+		b.set_pressed_no_signal(int(b.get_meta("preset", -1)) == current)
 
 
 func _set_language(lang: String) -> void:

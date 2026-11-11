@@ -10,6 +10,11 @@ const ResultsScene := preload("res://scenes/ui/results_screen.tscn")
 const SettingsScene := preload("res://scenes/ui/settings_menu.tscn")
 const HUD_VIVID_SHADER := preload("res://assets/shaders/hud_vivid.gdshader")
 const ICON_FONT := preload("res://assets/fonts/main_font.ttf")
+const ICON_MIC := preload("res://assets/icons/mic.svg")
+const ICON_MIC_OFF := preload("res://assets/icons/mic_off.svg")
+const ICON_GROUP := preload("res://assets/icons/group.svg")
+const ICON_SPEAKER := preload("res://assets/icons/speaker.svg")
+const ICON_SPEAKER_OFF := preload("res://assets/icons/speaker_off.svg")
 
 var round_manager: Node = null
 var touch_controls: Control = null
@@ -44,6 +49,12 @@ var _blind: ColorRect
 var _hs_label: Label
 var _refresh_t := 0.0
 var _anim_timer := 0.0
+var _timer_secs: int = -1       # _on_timer: skip identical text/color writes
+var _timer_flash: int = -1
+var _hs_sig := ""               # hide/seek countdown label: last applied key|seconds
+var _voice_sig := ""            # voice row: last applied signature (icons, tooltips, modulates)
+var _audio_sig := ""            # friends/game audio buttons: last applied signature
+var _rank_sig := ""             # ranking cards: rebuild only when player/score state changes
 var _anim_frame := 0
 const ANIM_FRAME_TIME := 0.5
 var _pause_texes: Array[Texture2D] = []
@@ -297,8 +308,15 @@ func _on_game_audio_pressed() -> void:
 
 
 func _update_audio_buttons() -> void:
+	# Assignments only when something observable changes (mute state, animation
+	# frame or language); skips identical texture/icon loads and property writes.
+	var lang := str(SettingsManager.get_setting("language"))
+	var sig := "%d|%d|%d|%s" % [int(VoiceChat.master_mute), int(_game_audio_muted), _anim_frame, lang]
+	if sig == _audio_sig:
+		return
+	_audio_sig = sig
 	if _friends_audio_button != null:
-		_friends_audio_button.icon = load("res://assets/icons/speaker_off.svg" if VoiceChat.master_mute else "res://assets/icons/speaker.svg")
+		_friends_audio_button.icon = ICON_SPEAKER_OFF if VoiceChat.master_mute else ICON_SPEAKER
 		_friends_audio_button.tooltip_text = GameManager.t("voice_output_off") if VoiceChat.master_mute else GameManager.t("voice_output_on")
 		_friends_audio_button.modulate = Color(1.0, 0.55, 0.55) if VoiceChat.master_mute else Color.WHITE
 	if _game_audio_button != null:
@@ -306,6 +324,45 @@ func _update_audio_buttons() -> void:
 		_game_audio_button.texture_pressed = _music_texes[_anim_frame]  # same as normal for simplicity
 		_game_audio_button.tooltip_text = GameManager.t("game_audio_off") if _game_audio_muted else GameManager.t("game_audio_on")
 		_game_audio_button.modulate = Color(1.0, 0.55, 0.55) if _game_audio_muted else Color.WHITE
+
+
+# Assigns voice-row icons/tooltips/modulates only when an input actually changed.
+func _update_voice_buttons() -> void:
+	var open_mic := bool(SettingsManager.get_setting("voice_open_mic"))
+	var uid := multiplayer.get_unique_id()
+	var speaking := VoiceChat.is_speaking(uid)
+	var mic_state := 0  # 0 ready, 1 probing permission, 2 denied, 3 muted (open mic), 4 speaking
+	if not VoiceChat.mic_ready:
+		mic_state = 2 if VoiceChat.permission_denied else 1
+	elif VoiceChat.muted and open_mic:
+		mic_state = 3
+	elif speaking:
+		mic_state = 4
+	var lang := str(SettingsManager.get_setting("language"))
+	var sig := "%d|%d|%d|%s" % [mic_state, int(VoiceChat.team_only), int(speaking), lang]
+	if sig == _voice_sig:
+		return
+	_voice_sig = sig
+	match mic_state:
+		1:
+			_mic_button.icon = ICON_MIC
+			_mic_button.tooltip_text = "..."
+		2:
+			_mic_button.icon = ICON_MIC
+			_mic_button.tooltip_text = "X"
+		3:
+			_mic_button.icon = ICON_MIC_OFF
+			_mic_button.tooltip_text = GameManager.t("mic_off_short")
+		4:
+			_mic_button.icon = ICON_MIC
+			_mic_button.tooltip_text = GameManager.t("mic_talk_short")
+		_:
+			_mic_button.icon = ICON_MIC
+			_mic_button.tooltip_text = GameManager.t("mic_short")
+	# Modulate follows the same rule as before (independent of the ready states).
+	_mic_button.modulate = Color(1, 0.55, 0.55) if (VoiceChat.muted and open_mic) else (Color(0.6, 1, 0.6) if speaking else Color.WHITE)
+	_chan_button.icon = ICON_GROUP
+	_chan_button.tooltip_text = GameManager.t("chan_team") if VoiceChat.team_only else GameManager.t("chan_all")
 
 
 func _process(delta: float) -> void:
@@ -329,22 +386,9 @@ func _process(delta: float) -> void:
 	_friends_audio_button.visible = online
 	_game_audio_button.visible = true
 	if online:
-		var open_mic := bool(SettingsManager.get_setting("voice_open_mic"))
-		var label := GameManager.t("mic_short")
-		var mic_icon := "mic"
-		if not VoiceChat.mic_ready:
-			label = "..." if not VoiceChat.permission_denied else "X"
-		elif VoiceChat.muted and open_mic:
-			label = GameManager.t("mic_off_short")
-			mic_icon = "mic_off"
-		elif VoiceChat.is_speaking(multiplayer.get_unique_id()):
-			label = GameManager.t("mic_talk_short")
-			mic_icon = "mic"
-		_mic_button.icon = load("res://assets/icons/%s.svg" % mic_icon)
-		_mic_button.tooltip_text = label
-		_mic_button.modulate = Color(1, 0.55, 0.55) if (VoiceChat.muted and open_mic) else (Color(0.6, 1, 0.6) if VoiceChat.is_speaking(multiplayer.get_unique_id()) else Color.WHITE)
-		_chan_button.icon = load("res://assets/icons/group.svg")
-		_chan_button.tooltip_text = GameManager.t("chan_team") if VoiceChat.team_only else GameManager.t("chan_all")
+		_update_voice_buttons()
+	else:
+		_voice_sig = ""
 	_update_audio_buttons()
 	# Hide and seek: blindfold + countdown while the hiders are hiding
 	var hide_left: float = round_manager.hide_time_left()
@@ -354,9 +398,15 @@ func _process(delta: float) -> void:
 	if hide_left > 0.0 and local != null:
 		_hs_label.visible = true
 		var key := "hs_hiding_left" if int(local.role) == GameConstants.HS_ROLE_HIDER else "hs_blind_left"
-		_hs_label.text = GameManager.t(key) % int(ceil(hide_left))
+		var hs_secs := int(ceil(hide_left))
+		var hs_sig := "%s|%d|%s" % [key, hs_secs, str(SettingsManager.get_setting("language"))]
+		if hs_sig != _hs_sig:
+			_hs_sig = hs_sig
+			_hs_label.text = GameManager.t(key) % hs_secs
 	else:
 		_hs_label.visible = false
+		if _hs_sig != "":
+			_hs_sig = ""
 	_refresh_t += delta
 	if _refresh_t > 0.5:
 		_refresh_t = 0.0
@@ -399,9 +449,16 @@ func _show_round_goal() -> void:
 
 func _on_timer(remaining: float) -> void:
 	var secs := int(ceil(remaining))
+	var flash := -1
+	if remaining <= 10.0:
+		flash = int(remaining * 2.0) % 2
+	if secs == _timer_secs and flash == _timer_flash:
+		return  # identical label and color; skip the redraw and theme override
+	_timer_secs = secs
+	_timer_flash = flash
 	_timer_label.text = "%d:%02d" % [int(secs / 60.0), secs % 60]
 	if remaining <= 10.0:
-		_timer_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4) if int(remaining * 2.0) % 2 == 0 else Color.WHITE)
+		_timer_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4) if flash == 0 else Color.WHITE)
 	else:
 		_timer_label.add_theme_color_override("font_color", Color.WHITE)
 
@@ -539,6 +596,38 @@ func _fit_counter_background() -> void:
 	_counter_bg.offset_bottom = fitted_size.y * 0.5
 
 
+## Cheap content signature of the ranking board. When nothing visible changed the
+## whole card rebuild (queue_free + recreate) is skipped.
+func _ranking_signature() -> String:
+	if round_manager == null:
+		return ""
+	var parts := PackedStringArray()
+	if round_manager.is_respawn_score_mode():
+		var local_id := -1
+		if round_manager.local_player != null and is_instance_valid(round_manager.local_player):
+			local_id = int(round_manager.local_player.peer_id)
+		parts.append("ko|%d|%d" % [int(round_manager.mode), local_id])
+		for e in round_manager.ko_standings():
+			var id := int(e["id"])
+			parts.append("%d/%d/%d/%d/%d" % [int(e["rank"]), id, int(e["kos"]), int(e["falls"]), int(bool(round_manager.alive.get(id, false)))])
+		return ",".join(parts)
+	var scope := int(round_manager.hider_team()) if round_manager.mode == GameConstants.MODE_HIDE else -1
+	parts.append("nko|%d|%d|%d" % [int(round_manager.mode), int(round_manager.is_team_mode()), scope])
+	var ids: Array = round_manager.players.keys()
+	ids.sort()
+	if round_manager.is_team_mode():
+		ids.sort_custom(func(x, y) -> bool: return int(round_manager.team_of.get(x, 0)) < int(round_manager.team_of.get(y, 0)))
+	for id in ids:
+		var p: Node = round_manager.players[id]
+		if p == null or not is_instance_valid(p):
+			parts.append("x")
+			continue
+		var tm := int(round_manager.team_of.get(id, 0))
+		var speaking_mark := "*" if VoiceChat.is_speaking(int(id)) else ""
+		parts.append("%d|%d|%d|%d|%s%s" % [int(id), int(bool(round_manager.alive.get(id, false))), tm, int(p.color_index), str(p.player_name), speaking_mark])
+	return ",".join(parts)
+
+
 ## Knockout scoreboard: live ranking by validated knockouts (top 5 plus the local player), mobile sized.
 func _refresh_ko_board() -> void:
 	var standings: Array = round_manager.ko_standings()
@@ -571,6 +660,10 @@ func _refresh_ko_board() -> void:
 func _refresh_ranking() -> void:
 	if round_manager == null:
 		return
+	var sig := _ranking_signature()
+	if sig == _rank_sig:
+		return  # nothing visible changed; keep the existing cards
+	_rank_sig = sig
 	for c in _ranking.get_children():
 		_ranking.remove_child(c)
 		c.queue_free()

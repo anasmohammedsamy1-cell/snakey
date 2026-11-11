@@ -64,7 +64,19 @@ func _run() -> void:
 	_check(player != null, "local player spawned")
 	_check(get_tree().get_nodes_in_group("players").size() == 4, "1 player + 3 bots spawned")
 	_check(rm.state == 2, "round reached PLAYING (state=%d)" % rm.state)
-	_check(arena.get_node("Obstacles").get_child_count() == 1 + 3 + 32 + 2, "obstacles built (sweeper, 3 hammers, 32 tiles, 2 bridges)")
+	# v5: the floor is built from concentric tiers (Sudden Death drops them one by one), and the
+	# obstacles stand on the tier they belong to, so they fall away with their own piece of floor.
+	var obstacles: Node = arena.get_node("Obstacles")
+	var tiers := 0
+	var core: Node = null
+	for child in obstacles.get_children():
+		if str(child.name).begins_with("FloorTier"):
+			tiers += 1
+			core = child
+	_check(tiers >= 3, "floor is built from at least 3 tiers (tiers=%d)" % tiers)
+	_check(core != null and core.get_child_count() > 0, "the solid core tier exists and holds collision")
+	_check(get_tree().get_nodes_in_group("arena_crumble_tiles").size() >= tiers,
+		"every tier except the core can collapse")
 
 	# Arena-event state is host-controlled and resettable.
 	rm._apply_arena_event(1, 9.0)
@@ -121,7 +133,7 @@ func _run() -> void:
 	player.global_position = Vector3(14.5, 1.0, 0.0)
 	player.velocity = Vector3.ZERO
 	await _wait(2.5)
-	var tile: Node = arena.get_node("Obstacles/Tile0")
+	var tile: Node = obstacles.find_child("RingTile0", true, false)
 	_check(tile.state != 0, "falling tile triggered by player contact (state=%d)" % tile.state)
 
 	# Fall + practice respawn
@@ -174,6 +186,7 @@ func _run() -> void:
 	_check(NetworkManager.join_game("192.168.1.2", 80) != "", "invalid port rejected")
 
 	# ---------------- Profile validation
+	SaveManager.coins = 500                      # a name change after the first one costs coins
 	SaveManager.set_profile("  Smoke Tester XXL  ", 3)
 	_check(SaveManager.player_name == "Smoke Tester X", "long names are trimmed (got '%s')" % SaveManager.player_name)
 	SaveManager.set_profile("   ", 1)

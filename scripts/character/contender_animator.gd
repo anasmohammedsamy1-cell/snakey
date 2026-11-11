@@ -70,6 +70,7 @@ var _to_w := Transform3D.IDENTITY
 var _to_m := Transform3D.IDENTITY
 var _vel_m := Vector3.ZERO
 var _time := 0.0
+var _freeze_until_ms := 0
 var _id := {}
 var _rest_b := {}
 var _arm_o: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
@@ -83,6 +84,7 @@ var _rt: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]      # smoothed reach tar
 var _rt_in: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
 var _smax: Array[float] = [1.0, 1.0]
 var _k := 10.0
+var quality_level := 2
 
 var _foot_w: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
 var _sw_on: Array[bool] = [false, false]
@@ -230,6 +232,12 @@ func reset() -> void:
 		_cu[i] = _tg[i]
 
 
+## LOW remote characters skip the secondary per-step ground probe; the cached
+## actor-level ground height is enough for their simplified cosmetic gait.
+func set_quality(level: int) -> void:
+	quality_level = clampi(level, 0, 2)
+
+
 ## World position of the victim's feet-origin while we carry / throw (read by the victim).
 func get_carry_origin_w(origin_w: Vector3, yaw: float) -> Vector3:
 	var b := Basis(Vector3.UP, yaw)
@@ -255,14 +263,24 @@ func is_airborne_tumbling() -> bool:
 # --------------------------------------------------------------------------
 # Frame update
 
-func update(dt: float) -> void:
+## Pauses the pose simulation for a short real-time window (online hit-stop).
+## Wall-clock based, so it is independent of Engine.time_scale.
+func freeze(real_seconds: float) -> void:
+	_freeze_until_ms = maxi(_freeze_until_ms, Time.get_ticks_msec() + int(real_seconds * 1000.0))
+
+
+func update(dt: float, allow_large_dt := false) -> void:
 	if not ok or not sk.is_inside_tree():
 		return
-	dt = clampf(dt, 0.0001, 0.05)
+	if Time.get_ticks_msec() < _freeze_until_ms:
+		return
+	dt = maxf(dt, 0.0001)
+	if not allow_large_dt:
+		dt = minf(dt, 0.05)
 	_time += dt
 	_to_w = sk.global_transform
 	_to_m = _to_w.affine_inverse()
-	_space = sk.get_world_3d().direct_space_state
+	_space = null if quality_level <= 0 else sk.get_world_3d().direct_space_state
 	var vw := Vector3(in_vel_w.x, 0.0, in_vel_w.z)
 	_vel_m = _to_m.basis * vw
 	_yaw_rate = lerpf(_yaw_rate, wrapf(in_holder_yaw - _yaw_prev, -PI, PI) / dt, 1.0 - exp(-12.0 * dt))

@@ -18,6 +18,7 @@ controller = read("scripts/player_controller.gd")
 round_manager = read("scripts/round_manager.gd")
 custom = read("scripts/customization_menu.gd")
 player_scene = read("scenes/player.tscn")
+animator = read("scripts/character/contender_animator.gd")
 
 with (ROOT / "NewAssets/Model/contender.glb").open("rb") as model_file:
     _, version, _ = struct.unpack("<4sII", model_file.read(12))
@@ -34,8 +35,10 @@ def check(name, condition):
 
 check("active player scene uses the imported contender visual", "contender_visuals.gd" in player_scene)
 check("visual grab state is declared and synchronized by the player controller",
-      "var grabbing_id := 0" in visuals and "var grab_phase := 0" in visuals
-      and "visuals.set_grab_state(holding, phase)" in controller)
+      "var grabbing_id := 0" in controller and "var grab_phase := 0" in controller
+      and "visuals.on_grab_links(holding, held_by, phase)" in controller
+      and 'a.in_holding = int(p.get("grabbing_id"))' in visuals
+      and 'a.in_phase = int(p.get("grab_phase"))' in visuals)
 check("throw input is only enabled after the grab reaches its carrying phase",
       "if grabbing_id != 0 and grab_phase == 0:" in controller
       and "var carrying := grabbing_id != 0 and grab_phase == 1" in controller)
@@ -46,13 +49,14 @@ check("grab/punch aims existing skeleton bones without a replacement fist",
       and "_arm_chain(" in pose
       and "arm_fist" not in visuals and "RubberArm" not in visuals and "replacement hand" not in visuals.lower())
 check("held character follows the selected real hand transform",
-      "get_grab_hold_position()" in controller or "get_grab_hand_transform()" in controller
-      and ("visuals.get_grab_hold_position()" in controller or "get_grab_hand_transform().origin" in controller))
+      "get_grab_overhead_position" in controller and "get_grab_overhead_position" in visuals)
 check("failed grab retracts while confirmed grab keeps its real-hand target",
-      "not _arm_confirmed and _arm_hold_t > ARM_HOLD_UNCONFIRMED" in visuals
-      and "pose_rig.set_reach_target(_arm_world_goal, _arm_side)" in visuals)
+      "end = true      # the pull failed" in round_manager
+      and "_release_grab(int(aid))" in round_manager
+      and "elif pulling and in_has_target:" in animator
+      and "_reach_both(in_target_w" in animator)
 check("throw wind-up delays release and applies impulse after the timer",
-      "THROW_RELEASE_DELAY := 0.30" in round_manager
+      "THROW_RELEASE_DELAY := GameConstants.THROW_TOTAL_TIME" in round_manager
       and 'held["throw_time"] = THROW_RELEASE_DELAY' in round_manager
       and 'if float(g["throw_time"]) <= 0.0:' in round_manager
       and round_manager.index('if float(g["throw_time"]) <= 0.0:')

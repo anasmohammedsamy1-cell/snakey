@@ -31,6 +31,8 @@ func show_results(results: Array, headline: String, practice: bool) -> void:
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_child(title)
 	box.add_child(Cartoon.wrapped_label(GameManager.t("round_over") if not practice else GameManager.t("practice_tip"), 20, Color(1, 1, 1, 0.75)))
+	if not practice and SaveManager.last_coins_earned > 0:
+		box.add_child(Cartoon.wrapped_label(GameManager.t("coins_earned") % [SaveManager.last_coins_earned, SaveManager.coins], 20, Cartoon.YELLOW))
 	if not practice and not SaveManager.last_unlocked_colors.is_empty():
 		var names: PackedStringArray = []
 		for color_id in SaveManager.last_unlocked_colors:
@@ -46,48 +48,15 @@ func show_results(results: Array, headline: String, practice: bool) -> void:
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list)
 
+	var show_acc := not narrow
+	var is_ko := false
+	for r0 in results:
+		if bool(r0.get("ko_mode", false)):
+			is_ko = true
+	list.add_child(_header_row(practice, is_ko, show_acc))
+	var me_id := multiplayer.get_unique_id()
 	for r in results:
-		var row := BoxContainer.new()
-		row.vertical = narrow
-		row.add_theme_constant_override("separation", 8 if compact else 12)
-		var rank := int(r["rank"])
-		var rank_label := Cartoon.label(_rank_text(rank), 26, _rank_color(rank))
-		rank_label.custom_minimum_size = Vector2(70, 44)
-		row.add_child(rank_label)
-		var swatch := ColorRect.new()
-		swatch.color = GameConstants.get_color(int(r["color"]))
-		swatch.custom_minimum_size = Vector2(28, 28)
-		swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(swatch)
-		var pname := str(r["name"])
-		if bool(r.get("bot", false)):
-			pname += " (%s)" % GameManager.t("bots")
-		var name_label := Cartoon.label(pname, 18 if compact else 24, Cartoon.WHITE, HORIZONTAL_ALIGNMENT_LEFT)
-		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(name_label)
-		if str(r.get("tag", "")) != "":
-			row.add_child(Cartoon.label(str(r["tag"]), 18, Color(1, 1, 1, 0.75)))
-		if bool(r.get("ko_mode", false)):
-			# Knockout: knockouts first (the ranking key), then falls (first tie-break), then the match points.
-			row.add_child(Cartoon.label("%d %s" % [int(r["kos"]), GameManager.t("ko_short")], 24, Color(1.0, 0.85, 0.12)))
-			row.add_child(Cartoon.label("%d %s" % [int(r["falls"]), GameManager.t("falls")], 18, Color(1, 1, 1, 0.7)))
-			row.add_child(Cartoon.label("+%d %s" % [int(r["points"]), GameManager.t("points")], 20, Color(0.45, 0.95, 0.4)))
-		elif practice:
-			row.add_child(Cartoon.label("%d %s" % [int(r["falls"]), GameManager.t("falls")], 22, Color(1, 1, 1, 0.85)))
-		else:
-			row.add_child(Cartoon.label("+%d %s" % [int(r["points"]), GameManager.t("points")], 22, Color(0.45, 0.95, 0.4)))
-			var total := Cartoon.label("%s: %d" % [GameManager.t("total"), int(r["total"])], 20, Color(1, 1, 1, 0.75))
-			total.custom_minimum_size = Vector2(120, 0)
-			row.add_child(total)
-			var st: Dictionary = r.get("stats", {})
-			if not st.is_empty():
-				var att := int(st.get("attacks", 0))
-				var hit := int(st.get("hits", 0))
-				var acc := 0 if att == 0 else roundi(100.0 * float(hit) / float(att))
-				var extra := Cartoon.label("KO %d  |  %d%%" % [int(st.get("kos", 0)), acc], 16, Color(1, 1, 1, 0.6))
-				extra.custom_minimum_size = Vector2(100, 0)
-				row.add_child(extra)
-		list.add_child(row)
+		list.add_child(_result_row(r, practice, show_acc, compact, int(r["id"]) == me_id or str(r["name"]) == SaveManager.player_name))
 
 	var buttons := BoxContainer.new()
 	buttons.vertical = narrow
@@ -106,6 +75,87 @@ func show_results(results: Array, headline: String, practice: bool) -> void:
 	box.add_child(buttons)
 	add_child(UIKit.centered(panel, Vector2(760, 560)))
 	UIKit.add_fade_in(panel)
+
+
+const COL_RANK := 64.0
+const COL_NUM := 78.0
+
+
+func _col(text: String, width: float, size: int, color: Color) -> Label:
+	var l := Cartoon.label(text, size, color)
+	l.custom_minimum_size = Vector2(width, 0)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return l
+
+
+func _header_row(practice: bool, is_ko: bool, show_acc: bool) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var dim := Color(1, 1, 1, 0.6)
+	row.add_child(_col("#", COL_RANK + 34.0, 16, dim))
+	var name_h := Cartoon.label(GameManager.t("hdr_player"), 16, dim, HORIZONTAL_ALIGNMENT_LEFT)
+	name_h.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(name_h)
+	if is_ko:
+		row.add_child(_col(GameManager.t("ko_short"), COL_NUM, 16, dim))
+		row.add_child(_col(GameManager.t("falls"), COL_NUM, 16, dim))
+		row.add_child(_col(GameManager.t("points"), COL_NUM, 16, dim))
+	elif practice:
+		row.add_child(_col(GameManager.t("falls"), COL_NUM, 16, dim))
+	else:
+		row.add_child(_col(GameManager.t("points"), COL_NUM, 16, dim))
+		row.add_child(_col(GameManager.t("total"), COL_NUM, 16, dim))
+		if show_acc:
+			row.add_child(_col("KO", COL_NUM, 16, dim))
+			row.add_child(_col(GameManager.t("hdr_accuracy"), COL_NUM, 16, dim))
+	return row
+
+
+func _result_row(r: Dictionary, practice: bool, show_acc: bool, compact: bool, is_me: bool) -> Control:
+	var rank := int(r["rank"])
+	var card := PanelContainer.new()
+	card.theme = Cartoon.theme()
+	var bg := Color(1.0, 0.85, 0.12, 0.22) if rank == 1 else Color(1, 1, 1, 0.09)
+	var border := Cartoon.YELLOW if is_me else (_rank_color(rank) if rank <= 3 else Color(1, 1, 1, 0.15))
+	card.add_theme_stylebox_override("panel", Cartoon.stylebox(bg, 14, border, 4 if is_me else 2, 6))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	card.add_child(row)
+	row.add_child(_col(_rank_text(rank), COL_RANK, 24, _rank_color(rank)))
+	var swatch := ColorRect.new()
+	swatch.color = GameConstants.get_color(int(r["color"]))
+	swatch.custom_minimum_size = Vector2(28, 28)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(swatch)
+	var pname := str(r["name"])
+	if bool(r.get("bot", false)):
+		pname += " (%s)" % GameManager.t("bots")
+	if is_me:
+		pname += "  ◄ " + GameManager.t("you")
+	if str(r.get("tag", "")) != "":
+		pname += "  [" + str(r["tag"]) + "]"
+	var name_label := Cartoon.label(pname, 18 if compact else 22, Cartoon.YELLOW if is_me else Cartoon.WHITE, HORIZONTAL_ALIGNMENT_LEFT)
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_label.clip_text = true
+	row.add_child(name_label)
+	var green := Color(0.45, 0.95, 0.4)
+	if bool(r.get("ko_mode", false)):
+		row.add_child(_col(str(int(r["kos"])), COL_NUM, 24, Color(1.0, 0.85, 0.12)))
+		row.add_child(_col(str(int(r["falls"])), COL_NUM, 20, Color(1, 1, 1, 0.75)))
+		row.add_child(_col("+%d" % int(r["points"]), COL_NUM, 22, green))
+	elif practice:
+		row.add_child(_col(str(int(r["falls"])), COL_NUM, 22, Color(1, 1, 1, 0.9)))
+	else:
+		row.add_child(_col("+%d" % int(r["points"]), COL_NUM, 22, green))
+		row.add_child(_col(str(int(r["total"])), COL_NUM, 20, Color(1, 1, 1, 0.8)))
+		if show_acc:
+			var st: Dictionary = r.get("stats", {})
+			var att := int(st.get("attacks", 0))
+			var hit := int(st.get("hits", 0))
+			var acc := 0 if att == 0 else roundi(100.0 * float(hit) / float(att))
+			row.add_child(_col(str(int(st.get("kos", 0))), COL_NUM, 18, Color(1, 1, 1, 0.8)))
+			row.add_child(_col("%d%%" % acc, COL_NUM, 18, Color(1, 1, 1, 0.8)))
+	return card
 
 
 func _rank_text(rank: int) -> String:

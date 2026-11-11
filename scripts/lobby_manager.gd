@@ -28,6 +28,7 @@ var _is_ready := false
 var _overlay: Control = null
 var _mode_btn: Button
 var _map_btn: Button
+var _vote_label: Label
 var _map_overlay: Control = null
 var _bots_label: Label
 var _bots_minus: Button
@@ -236,6 +237,7 @@ func _build() -> void:
 	_map_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_map_btn.add_theme_font_size_override("font_size", 20)
 	row1.add_child(_map_btn)
+	_vote_label = Cartoon.label("", 16, Color(1, 0.95, 0.5), HORIZONTAL_ALIGNMENT_LEFT)
 	_bots_minus = Cartoon.button("-", func() -> void: NetworkManager.set_cfg_value("bots", int(NetworkManager.cfg.get("bots", 0)) - 1), Cartoon.STYLE_NORMAL, Vector2(54, 50))
 	_bots_label = Cartoon.label("", 20, Cartoon.WHITE)
 	_bots_label.custom_minimum_size = Vector2(110, 0)
@@ -244,6 +246,7 @@ func _build() -> void:
 	row1.add_child(_bots_label)
 	row1.add_child(_bots_plus)
 	_settings_box.add_child(row1)
+	_settings_box.add_child(_vote_label)
 	var row2 := BoxContainer.new()
 	row2.add_theme_constant_override("separation", 8)
 	_responsive_boxes.append(row2)
@@ -534,14 +537,14 @@ func _on_mode_pressed() -> void:
 
 
 func _on_map_pressed() -> void:
-	# Opens the picture picker (host only: the button is disabled for clients).
+	# Opens the picture picker. Everybody (host included) casts one vote; the most voted map is played.
 	if _map_overlay != null and is_instance_valid(_map_overlay):
 		return
 	var maps: Array = GameConstants.maps_for_mode(int(NetworkManager.cfg.get("mode", 0)))
 	_map_overlay = MapPickerScript.new()
 	_map_overlay.setup(maps, int(NetworkManager.cfg.get("map", 0)))
 	add_child(_map_overlay)
-	_map_overlay.picked.connect(func(map_id: int) -> void: NetworkManager.set_cfg_value("map", map_id))
+	_map_overlay.picked.connect(func(map_id: int) -> void: NetworkManager.cast_map_vote(map_id))
 	_map_overlay.closed.connect(func() -> void: _map_overlay = null)
 
 
@@ -676,6 +679,21 @@ func _refresh_players() -> void:
 		_ready_button.modulate = Color(0.75, 1.0, 0.75) if _is_ready else Color.WHITE
 
 
+func _refresh_votes(cfg: Dictionary) -> void:
+	var tally: Dictionary = cfg.get("vote_tally", {})
+	if tally.is_empty():
+		_vote_label.text = ""
+		return
+	var parts: Array[String] = []
+	var ids := tally.keys()
+	ids.sort_custom(func(a, b) -> bool: return int(tally[a]) > int(tally[b]))
+	for m in ids:
+		var mid := int(m)
+		if mid >= 0 and mid < GameConstants.MAPS.size():
+			parts.append("%s x%d" % [GameManager.t(GameConstants.MAPS[mid]["key"]), int(tally[m])])
+	_vote_label.text = "%s: %s" % [GameManager.t("map_votes"), " | ".join(parts)]
+
+
 func _refresh_settings() -> void:
 	var cfg: Dictionary = NetworkManager.cfg
 	if cfg.is_empty():
@@ -698,8 +716,10 @@ func _refresh_settings() -> void:
 	else:
 		_extra_btn.visible = false
 	_balance_btn.visible = GameConstants.uses_teams(mode)
-	for b in [_mode_btn, _map_btn, _bots_minus, _bots_plus, _voice_btn, _extra_btn, _balance_btn]:
+	for b in [_mode_btn, _bots_minus, _bots_plus, _voice_btn, _extra_btn, _balance_btn]:
 		b.disabled = not host      # only the host can change room-wide settings (the host also re-validates)
+	_map_btn.disabled = false      # the map is chosen by vote, so every player may open the picker
+	_refresh_votes(cfg)
 
 
 # ---------------------------------------------------------------------------

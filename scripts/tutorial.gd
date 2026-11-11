@@ -23,7 +23,7 @@ func _ready() -> void:
 	touch_controls.input_exclusion_controls.append(_exit_button)
 	_exit_button.pressed.connect(_exit_tutorial)
 	player = PlayerScene.instantiate()
-	player.setup(1, SaveManager.player_name, SaveManager.color_index, false)
+	player.setup(1, SaveManager.player_name, SaveManager.color_index, false, SaveManager.detail_color_index)
 	player.position = Vector3(0, 0.8, 0)
 	add_child(player)
 	player.face_direction(Vector3(0, 0, -1))

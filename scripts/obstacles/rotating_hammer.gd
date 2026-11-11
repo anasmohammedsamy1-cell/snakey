@@ -57,6 +57,19 @@ func _build() -> void:
 	add_child(cap)
 	var base := Scenery.mesh_instance(Scenery.cylinder(0.6, 0.7, 0.25, 16), dark, Vector3(0, 0.12, 0))
 	add_child(base)
+	# The pole is SOLID: nobody can walk through it.
+	var pole_body := StaticBody3D.new()
+	pole_body.name = "PoleBody"
+	pole_body.collision_layer = 1
+	pole_body.collision_mask = 0
+	var pole_shape := CollisionShape3D.new()
+	var pole_cyl := CylinderShape3D.new()
+	pole_cyl.radius = 0.34
+	pole_cyl.height = pole_height
+	pole_shape.shape = pole_cyl
+	pole_shape.position = Vector3(0, pole_height * 0.5, 0)
+	pole_body.add_child(pole_shape)
+	add_child(pole_body)
 
 	# Rotating arm(s) + head(s)
 	var sides := [1.0]
@@ -71,6 +84,7 @@ func _build() -> void:
 		pivot.add_child(head)
 		var band := Scenery.mesh_instance(Scenery.box(Vector3(head_size.x * 0.3, head_size.y * 1.04, head_size.z * 1.04)), stripe, Vector3(arm_length * s, head_height, 0))
 		pivot.add_child(band)
+		_add_spikes(Vector3(arm_length * s, head_height, 0))
 		var marker := Node3D.new()
 		marker.position = Vector3(arm_length * s, head_height, 0)
 		marker.add_to_group("hazards")
@@ -83,14 +97,15 @@ func _build() -> void:
 			shape_node = CollisionShape3D.new()
 			hit_area.add_child(shape_node)
 		var box := BoxShape3D.new()
-		box.size = head_size * 1.05
+		box.size = head_size * 1.05 + Vector3(0.0, 0.0, 0.5)     # reaches the spike tips
 		shape_node.shape = box
 		shape_node.position = Vector3(arm_length * s, head_height, 0)
 
 	_hit_particles = CPUParticles3D.new()
 	_hit_particles.emitting = false
 	_hit_particles.one_shot = true
-	_hit_particles.amount = 4 if int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_LOW else 12
+	var preset := int(SettingsManager.get_setting("graphics_preset"))
+	_hit_particles.amount = 2 if preset == SettingsManager.PRESET_POTATO else (4 if preset == SettingsManager.PRESET_LOW else 12)
 	_hit_particles.lifetime = 0.5
 	_hit_particles.explosiveness = 1.0
 	_hit_particles.spread = 180.0
@@ -107,6 +122,37 @@ func _build() -> void:
 	pm.material = Scenery.mat(Color(1.0, 0.9, 0.3), 0.5, true)
 	_hit_particles.mesh = pm
 	add_child(_hit_particles)
+
+
+## Spikes on both moving faces (+Z / -Z) and the top of a head. One MultiMesh per head = one draw call.
+func _add_spikes(center: Vector3) -> void:
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 0.13
+	cone.height = 0.42
+	cone.radial_segments = 6
+	cone.rings = 1
+	cone.material = Scenery.mat(Color(0.86, 0.88, 0.93), 0.35)
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = cone
+	var xs := [-0.22, 0.22]
+	var ys := [-head_size.y * 0.22, head_size.y * 0.22]
+	mm.instance_count = 2 * xs.size() * ys.size() + 2
+	var i := 0
+	for face in [1.0, -1.0]:
+		var basis := Basis(Vector3.RIGHT, face * PI * 0.5)       # cone tip (+Y) -> +/-Z
+		for x in xs:
+			for y in ys:
+				mm.set_instance_transform(i, Transform3D(basis, center + Vector3(float(x) * head_size.x * 1.6, float(y), face * (head_size.z * 0.5 + 0.18))))
+				i += 1
+	for x in xs:
+		mm.set_instance_transform(i, Transform3D(Basis.IDENTITY, center + Vector3(float(x) * head_size.x * 1.6, head_size.y * 0.5 + 0.18, 0.0)))
+		i += 1
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	pivot.add_child(mmi)
 
 
 func _clock() -> float:

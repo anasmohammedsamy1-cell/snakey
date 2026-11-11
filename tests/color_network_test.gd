@@ -24,6 +24,7 @@ func run_test() -> void:
 	get_tree().current_scene = dummy
 	if role == "host":
 		SaveManager.color_index = 8
+		SaveManager.detail_color_index = -1          # classic metal
 		check(NetworkManager.host_game(PORT, "Color Test", 3) == "", "host starts with mint")
 		var ready := await wait_for(func() -> bool: return NetworkManager.can_start(), 12.0)
 		check(ready, "client joined and ready")
@@ -31,15 +32,18 @@ func run_test() -> void:
 		for id in NetworkManager.players:
 			if int(id) != 1: client_id = int(id)
 		check(client_id != 0 and NetworkManager.players.has(client_id) and int(NetworkManager.players[client_id]["color"]) == 9, "host receives client's gold color")
+		check(client_id != 0 and int(NetworkManager.players[client_id].get("detail", -1)) == 5, "host receives client's grape detail color")
 		NetworkManager.start_match()
 		await wait(5.0)
 		var arena = get_tree().current_scene
 		check(arena != null and arena.name == "Arena", "host loads arena")
 		if arena != null and arena.name == "Arena":
 			check(arena.round_manager.players.has(client_id) and int(arena.round_manager.players[client_id].color_index) == 9, "remote player remains gold in match")
+			check(arena.round_manager.players.has(client_id) and int(arena.round_manager.players[client_id].detail_color_index) == 5, "remote player keeps grape detail color in match")
 		await wait(2.0)
 	else:
 		SaveManager.color_index = 9
+		SaveManager.detail_color_index = 5             # grape screws & gaps
 		await wait(1.0)
 		check(NetworkManager.join_game("127.0.0.1", PORT) == "", "client starts joining with gold")
 		var joined := await wait_for(func() -> bool: return NetworkManager.players.size() >= 2 and not NetworkManager.is_busy(), 12.0)

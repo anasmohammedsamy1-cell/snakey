@@ -3,7 +3,7 @@
 ## A. Automated (headless, no display needed)
 
 Both tests print `PASS` / `FAIL` lines and exit with code `1` if anything failed.
-Replace `godot` with the path to your Godot 4.3 binary. Run from the `LastOneFalls/` folder.
+Replace `godot` with the path to your Godot 4.7 binary. Run from the `LastOneFalls/` folder.
 
 ### 1. Single‑process smoke test (practice mode, menus, lobby, settings, profile)
 ```
@@ -28,7 +28,7 @@ What the network test covers: host_game, join_game, lobby list snapshot sync, re
 host↔client position replication, host‑validated push delivered to the client, client fall →
 host elimination → round end → ranks and points, `return_to_lobby`, clean session shutdown.
 
-Status at this delivery: smoke, net, lan and modes tests were executed with Godot 4.3 headless and passed (see TEST_REPORT.md).
+Status: Godot-headless tests were NOT executed in the latest review (no Godot binary available); see TEST_REPORT.md for exactly what was and was not run.
 
 ### 2b. Modes and maps (single process)
 ```
@@ -163,6 +163,26 @@ python3 tests/test_ui_ux_invariants.py
 ```
 
 These tests inspect source-level contracts only. They do not replace Godot parser, scene, rendering, touch, Android export, or live multiplayer tests.
+
+
+## F. Cheap toon look + outline test (headless, no display needed)
+
+Covers the character toon shading (`RECOLOR_SHADER`'s `light()`) and the inverted-hull
+outline attached as `next_pass` on the recolor material. Compiles both shaders and checks
+the preset gating, the shared outline material and that `set_color()` still drives
+`body_color`.
+
+```
+godot --headless --path . res://tests/toon_outline_test.tscn
+```
+
+Expected: `[TOON] finished with 0 failure(s)` and a clean exit code (`0`). The source-level
+half of the same contract (switchable `TOON_ENABLED` constant, `light()` band math,
+`cull_front` vertex push) runs without Godot:
+
+```
+python3 tests/test_toon_look_invariants.py
+```
 
 
 ### 4. Audio engineering invariants (Python, source-level)

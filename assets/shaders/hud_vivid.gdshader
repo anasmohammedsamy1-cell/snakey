@@ -1,7 +1,7 @@
 shader_type canvas_item;
 
-uniform float saturation : hint_range(0.8, 1.5) = 1.18;
-uniform float contrast : hint_range(0.8, 1.5) = 1.12;
+uniform float saturation : hint_range(0.8, 1.5) = 1.32;
+uniform float contrast : hint_range(0.8, 1.5) = 1.25;
 
 void fragment() {
 	vec4 source = texture(TEXTURE, UV) * COLOR;

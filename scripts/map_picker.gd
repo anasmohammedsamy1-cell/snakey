@@ -1,6 +1,7 @@
 extends Control
-## Map picker popup: a tidy grid of cards, one per map, each with a picture, the name, the size and a
-## one-line description. Only the maps that fit the chosen game mode are listed (same rule as before:
+## Map picker popup (carousel): one BIG map at a time with the picture, name, size and description,
+## arrow buttons / swipe / keyboard arrows to browse, a strip of small pictures to jump straight to a map,
+## and a clear SELECT button. Only the maps that fit the chosen game mode are listed (same rule as before:
 ## floating arenas for Classic / Team brawl, houses for Hide and seek).
 ## Usage:
 ##   var p := MapPickerScript.new()
@@ -19,161 +20,230 @@ const GameConstants := preload("res://scripts/game_constants.gd")
 
 const THUMB_DIR := "res://assets/maps/map_%d.png"
 const CARD_W := 330.0
-const DESC_KEYS := ["map_cloud_desc", "map_ring_desc", "map_tiles_desc", "map_islands_desc", "map_donut_desc", "map_villa_desc", "map_flat_desc", "map_bounce_dome_desc", "map_neon_springs_desc", "map_candy_cloud_desc", "map_sky_bounce_desc", "map_pinball_bounce_desc", "map_twister_desc", "map_school_desc", "map_warehouse_desc", "map_museum_desc"]
+const DESC_KEYS := ["map_cloud_desc", "map_ring_desc", "map_tiles_desc", "map_islands_desc", "map_donut_desc", "map_villa_desc", "map_flat_desc", "map_bounce_dome_desc", "map_neon_springs_desc", "map_candy_cloud_desc", "map_sky_bounce_desc", "map_pinball_bounce_desc", "map_twister_desc", "map_school_desc", "map_warehouse_desc", "map_museum_desc", "map_family_flat_desc", "map_plaza_desc", "map_mini_tiles_desc", "map_split_ring_desc", "map_ice_rink_desc", "map_conveyor_mill_desc", "map_wind_tunnel_desc"]
 
 var _maps: Array = []
-var _selected := 0
-var _scroll: ScrollContainer = null
-var _grid: GridContainer = null
-var _selected_card: Control = null
+var _selected := 0            # the map that is currently chosen
+var _index := 0               # index (into _maps) of the map being previewed
+var _tex_cache: Dictionary = {}
+var _thumb: TextureRect
+var _fallback: ColorRect
+var _name_label: Label
+var _size_label: Label
+var _desc_label: Label
+var _count_label: Label
+var _select_btn: Button
+var _strip: HBoxContainer
+var _strip_scroll: ScrollContainer
+var _swipe_from := Vector2.ZERO
+var _swiping := false
 
 
 func setup(maps: Array, selected: int) -> void:
 	_maps = maps
 	_selected = selected
+	_index = maxi(0, _maps.find(selected))
 
 
 func _ready() -> void:
 	layout_direction = Control.LAYOUT_DIRECTION_RTL if GameManager.is_rtl() else Control.LAYOUT_DIRECTION_LTR
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	UIKit.dim_background(self)
+	if _maps.is_empty():
+		_close()
+		return
 
 	var panel := Cartoon.panel()
-	var box := UIKit.vbox(10)
+	var box := UIKit.vbox(8)
 	panel.add_child(box)
 
-	box.add_child(Cartoon.title(GameManager.t("choose_map"), 36))
-	var kind := 0
-	if _maps.size() > 0:
-		kind = int(GameConstants.MAPS[int(_maps[0])]["kind"])
+	box.add_child(Cartoon.title(GameManager.t("choose_map"), 34))
+	var kind := int(GameConstants.MAPS[int(_maps[0])]["kind"])
 	var sub_key := "maps_trampoline" if kind == 2 else ("maps_house" if kind == 1 else "maps_arena")
-	box.add_child(Cartoon.label(GameManager.t(sub_key), 20, Color(1, 1, 1, 0.75)))
+	box.add_child(Cartoon.label(GameManager.t(sub_key), 18, Color(1, 1, 1, 0.75)))
 
-	_scroll = ScrollContainer.new()
-	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_scroll.scroll_deadzone = 12
-	box.add_child(_scroll)
-
-	var grid := GridContainer.new()
-	_grid = grid
-	var viewport_width := get_viewport().get_visible_rect().size.x
-	var responsive_columns := 1 if viewport_width < 760.0 else (2 if viewport_width < 1100.0 else 3)
-	grid.columns = maxi(1, mini(_maps.size(), responsive_columns))
-	grid.add_theme_constant_override("h_separation", 14)
-	grid.add_theme_constant_override("v_separation", 14)
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_scroll.add_child(grid)
-
-	for id in _maps:
-		var card := _make_card(int(id))
-		grid.add_child(card)
-		if int(id) == _selected:
-			_selected_card = card
-
-	box.add_child(Cartoon.button(GameManager.t("back"), _close, Cartoon.STYLE_NORMAL, Vector2(0, 54)))
-	add_child(UIKit.centered(panel, Vector2(1120, 660)))
-	get_viewport().size_changed.connect(_on_viewport_resized)
-	_on_viewport_resized()
-
-	# Bring the current map into view (matters when the list is longer than the screen).
-	await get_tree().process_frame
-	if is_instance_valid(_scroll) and is_instance_valid(_selected_card):
-		_scroll.ensure_control_visible(_selected_card)
-
-
-func _on_viewport_resized() -> void:
-	if _grid == null:
-		return
-	var width := get_viewport().get_visible_rect().size.x
-	var columns := 1 if width < 760.0 else (2 if width < 1100.0 else 3)
-	_grid.columns = maxi(1, mini(_maps.size(), columns))
-	var card_width := minf(CARD_W, maxf(80.0, width - 120.0))
-	for card in _grid.get_children():
-		card.custom_minimum_size.x = card_width
-		var inner_width := maxf(0.0, card_width - 24.0)
-		var thumb: Control = card.get_meta("thumb", null)
-		var desc: Control = card.get_meta("description", null)
-		if thumb != null:
-			thumb.custom_minimum_size = Vector2(inner_width, inner_width * 9.0 / 16.0)
-		if desc != null:
-			desc.custom_minimum_size.x = inner_width
-
-
-func _make_card(map_id: int) -> Control:
-	var info: Dictionary = GameConstants.MAPS[map_id]
-	var is_sel := map_id == _selected
+	# ---- middle: [prev] [big card] [next]
+	var rtl := GameManager.is_rtl()
+	var mid := HBoxContainer.new()
+	mid.add_theme_constant_override("separation", 10)
+	mid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(mid)
+	var prev_btn := Cartoon.button("▶" if rtl else "◀", func() -> void: _step(-1), Cartoon.STYLE_NORMAL, Vector2(64, 0))
+	var next_btn := Cartoon.button("◀" if rtl else "▶", func() -> void: _step(1), Cartoon.STYLE_NORMAL, Vector2(64, 0))
+	prev_btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	next_btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	mid.add_child(prev_btn)
 
 	var card := PanelContainer.new()
 	card.theme = Cartoon.theme()
-	var viewport_width := get_viewport().get_visible_rect().size.x
-	var card_width := minf(CARD_W, maxf(80.0, viewport_width - 120.0))
-	card.custom_minimum_size = Vector2(card_width, 0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var border := Cartoon.YELLOW if is_sel else Color(1, 1, 1, 0.3)
-	var bg := Color(1.0, 0.82, 0.15, 0.18) if is_sel else Color(1, 1, 1, 0.1)
-	card.add_theme_stylebox_override("panel", Cartoon.stylebox(bg, 18, border, 5 if is_sel else 2, 10))
+	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	card.add_theme_stylebox_override("panel", Cartoon.stylebox(Color(1, 1, 1, 0.1), 20, Cartoon.YELLOW, 4, 10))
+	card.gui_input.connect(_on_card_input)
+	mid.add_child(card)
+	mid.add_child(next_btn)
 
 	var col := UIKit.vbox(6)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	card.add_child(col)
 
-	var inner_w := card_width - 24.0
-	var thumb := _make_thumb(map_id, inner_w)
-	card.set_meta("thumb", thumb)
-	col.add_child(thumb)
+	var frame := Control.new()
+	frame.custom_minimum_size = Vector2(0, 150)
+	frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	frame.clip_contents = true            # the picture is cropped to the card, never spills over
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(frame)
+	_fallback = ColorRect.new()
+	_fallback.color = Color(0.2, 0.45, 0.9)
+	_fallback.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_fallback.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.add_child(_fallback)
+	_thumb = TextureRect.new()
+	_thumb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	_thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.add_child(_thumb)
 
-	var name_text := GameManager.t(str(info["key"]))
-	if is_sel:
-		name_text = "✓ " + name_text
-	var name_label := Cartoon.label(name_text, 26, Cartoon.YELLOW if is_sel else Cartoon.WHITE)
-	col.add_child(name_label)
+	_name_label = Cartoon.label("", 30, Cartoon.YELLOW)
+	col.add_child(_name_label)
+	_size_label = Cartoon.label("", 18, Color(1, 1, 1, 0.7))
+	col.add_child(_size_label)
+	_desc_label = Cartoon.wrapped_label("", 18, Color(1, 1, 1, 0.9))
+	col.add_child(_desc_label)
+	_count_label = Cartoon.label("", 16, Color(1, 1, 1, 0.55))
+	col.add_child(_count_label)
 
-	var size_label := Cartoon.label("(%s)" % GameManager.t(str(info["size_key"])), 18, Color(1, 1, 1, 0.7))
-	col.add_child(size_label)
+	# ---- strip of small pictures (tap = jump to that map)
+	_strip_scroll = ScrollContainer.new()
+	_strip_scroll.custom_minimum_size = Vector2(0, 74)
+	_strip_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_strip_scroll.scroll_deadzone = 12
+	box.add_child(_strip_scroll)
+	_strip = HBoxContainer.new()
+	_strip.add_theme_constant_override("separation", 8)
+	_strip_scroll.add_child(_strip)
+	for i in _maps.size():
+		var b := Button.new()
+		b.theme = Cartoon.theme()
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(104, 62)
+		b.clip_contents = true
+		b.expand_icon = true
+		b.icon = _texture_for(int(_maps[i]))
+		b.pressed.connect(func() -> void:
+			AudioManager.click()
+			_go(i)
+		)
+		_strip.add_child(b)
 
-	var desc := Cartoon.label(GameManager.t(str(DESC_KEYS[map_id])), 17, Color(1, 1, 1, 0.88))
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.custom_minimum_size = Vector2(inner_w, 0)
-	card.set_meta("description", desc)
-	col.add_child(desc)
+	# ---- bottom buttons
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", 10)
+	box.add_child(bottom)
+	_select_btn = Cartoon.button(GameManager.t("pick_map"), _on_select_pressed, Cartoon.STYLE_PRIMARY, Vector2(0, 58))
+	_select_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom.add_child(_select_btn)
+	var rand_btn := Cartoon.button("🎲 " + GameManager.t("random_map"), _on_random_pressed, Cartoon.STYLE_NORMAL, Vector2(150, 58))
+	bottom.add_child(rand_btn)
+	var back := Cartoon.button(GameManager.t("back"), _close, Cartoon.STYLE_NORMAL, Vector2(140, 58))
+	bottom.add_child(back)
 
-	# Transparent button on top of the whole card = one big touch target.
-	var hit := Button.new()
-	hit.theme = Cartoon.theme()
-	hit.focus_mode = Control.FOCUS_NONE
-	hit.flat = true
-	hit.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
-	hit.add_theme_stylebox_override("hover", Cartoon.stylebox(Color(1, 1, 1, 0.08), 18, Color(0, 0, 0, 0), 0, 0))
-	hit.add_theme_stylebox_override("pressed", Cartoon.stylebox(Color(1, 1, 1, 0.16), 18, Color(0, 0, 0, 0), 0, 0))
-	hit.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-	hit.pressed.connect(func() -> void:
-		AudioManager.click()
-		_pick(map_id)
-	)
-	card.add_child(hit)
-	return card
+	add_child(UIKit.centered(panel, Vector2(920, 640)))
+	_refresh()
 
 
-func _make_thumb(map_id: int, width: float) -> Control:
-	var h := width * 9.0 / 16.0
+## Dice button: jump to a random map AND confirm it in one tap (a "random" button that still
+## asks you to press SELECT twice is just an extra step).
+func _on_random_pressed() -> void:
+	AudioManager.click()
+	if _maps.size() > 1:
+		var i := randi() % (_maps.size() - 1)
+		_go(i if i < _index else i + 1)        # always a different map than the one on screen
+	_pick(int(_maps[_index]))
+
+
+func _on_select_pressed() -> void:
+	AudioManager.click()
+	_pick(int(_maps[_index]))
+
+
+func _step(delta: int) -> void:
+	AudioManager.click()
+	_go(posmod(_index + delta, _maps.size()))
+
+
+func _go(i: int) -> void:
+	_index = clampi(i, 0, _maps.size() - 1)
+	_refresh()
+
+
+func _refresh() -> void:
+	var id := int(_maps[_index])
+	var info: Dictionary = GameConstants.MAPS[id]
+	var tex := _texture_for(id)
+	_thumb.texture = tex
+	_fallback.visible = tex == null
+	var chosen := id == _selected
+	_name_label.text = ("✓ " if chosen else "") + GameManager.t(str(info["key"]))
+	_size_label.text = "(%s)" % GameManager.t(str(info["size_key"]))
+	_desc_label.text = GameManager.t(str(DESC_KEYS[id]))
+	_count_label.text = "%d / %d" % [_index + 1, _maps.size()]
+	# strip highlight
+	for i in _strip.get_child_count():
+		var b: Button = _strip.get_child(i)
+		var on := i == _index
+		var col := Cartoon.YELLOW if on else Color(1, 1, 1, 0.25)
+		for st in ["normal", "hover", "pressed"]:
+			b.add_theme_stylebox_override(st, Cartoon.stylebox(Color(1, 1, 1, 0.12), 12, col, 5 if on else 2, 2))
+	if is_instance_valid(_strip_scroll) and _strip.get_child_count() > _index:
+		_strip_scroll.ensure_control_visible.call_deferred(_strip.get_child(_index))
+
+
+## Picture cropped tightly around the map: the middle of the thumbnail only (sky border removed).
+func _texture_for(map_id: int) -> Texture2D:
+	if _tex_cache.has(map_id):
+		return _tex_cache[map_id]
+	var result: Texture2D = null
 	var path := THUMB_DIR % map_id
 	if ResourceLoader.exists(path):
 		var tex = load(path)
 		if tex is Texture2D:
-			var tr := TextureRect.new()
-			tr.texture = tex
-			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-			tr.custom_minimum_size = Vector2(width, h)
-			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			return tr
-	var cr := ColorRect.new()
-	cr.color = Color(0.2, 0.45, 0.9)
-	cr.custom_minimum_size = Vector2(width, h)
-	cr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return cr
+			var sz := Vector2((tex as Texture2D).get_size())
+			var at := AtlasTexture.new()
+			at.atlas = tex
+			at.region = Rect2(sz.x * 0.10, sz.y * 0.14, sz.x * 0.80, sz.y * 0.74)
+			result = at
+	_tex_cache[map_id] = result
+	return result
+
+
+func _on_card_input(event: InputEvent) -> void:
+	# swipe left / right on the big card to browse
+	var pos := Vector2.ZERO
+	var down := false
+	var up := false
+	var mb := event as InputEventMouseButton
+	var st := event as InputEventScreenTouch
+	if mb != null and mb.button_index == MOUSE_BUTTON_LEFT:
+		pos = mb.position
+		down = mb.pressed
+		up = not mb.pressed
+	elif st != null:
+		pos = st.position
+		down = st.pressed
+		up = not st.pressed
+	else:
+		return
+	if down:
+		_swipe_from = pos
+		_swiping = true
+	elif up and _swiping:
+		_swiping = false
+		var dx := pos.x - _swipe_from.x
+		if absf(dx) > 70.0:
+			var rtl_sign := -1 if GameManager.is_rtl() else 1
+			_step(-rtl_sign if dx > 0.0 else rtl_sign)
 
 
 func _pick(map_id: int) -> void:
@@ -190,3 +260,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		get_viewport().set_input_as_handled()
 		_close()
+	elif event.is_action_pressed("ui_left") and not _maps.is_empty():
+		get_viewport().set_input_as_handled()
+		_step(1 if GameManager.is_rtl() else -1)
+	elif event.is_action_pressed("ui_right") and not _maps.is_empty():
+		get_viewport().set_input_as_handled()
+		_step(-1 if GameManager.is_rtl() else 1)
+	elif event.is_action_pressed("ui_accept") and not _maps.is_empty():
+		get_viewport().set_input_as_handled()
+		_pick(int(_maps[_index]))

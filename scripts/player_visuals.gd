@@ -82,8 +82,8 @@ func build(color: Color) -> void:
 	_hug_timer = 0.0
 	_built = true
 	_color = color
-	_body_mat = Scenery.mat(color, 0.55)
-	_accent_mat = Scenery.mat(color.lightened(0.4), 0.6)
+	_body_mat = Scenery.dup_material(Scenery.mat(color, 0.55)) as StandardMaterial3D
+	_accent_mat = Scenery.dup_material(Scenery.mat(color.lightened(0.4), 0.6)) as StandardMaterial3D
 	var dark := Scenery.mat(Color(0.12, 0.1, 0.16), 0.5)
 	var white := Scenery.mat(Color(1, 1, 1), 0.4)
 	var pink := Scenery.mat(Color(1.0, 0.55, 0.65), 0.8)
@@ -220,7 +220,7 @@ func play_melt(duration: float) -> void:
 	if pivot == null:
 		return
 	if _water_mat == null:
-		_water_mat = Scenery.mat(Color(0.3, 0.65, 1.0), 0.15, false, 0.82)
+		_water_mat = Scenery.dup_material(Scenery.mat(Color(0.3, 0.65, 1.0), 0.15, false, 0.82)) as StandardMaterial3D
 		_water_mat.metallic = 0.2
 		_water_mat.emission_enabled = true
 		_water_mat.emission = Color(0.1, 0.3, 0.6)

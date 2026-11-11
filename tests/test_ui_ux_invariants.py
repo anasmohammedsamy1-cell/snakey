@@ -34,7 +34,7 @@ check("lobby connection columns adapt to compact screens", "_connect_columns.ver
 check("lobby settings and action rows adapt to compact screens", "_responsive_boxes.append(row1)" in lobby and "_responsive_boxes.append(actions)" in lobby)
 check("customization preview layout supports compact stacking", "body.vertical = get_viewport().get_visible_rect().size.x < 900.0" in custom)
 check("results screen uses compact typography and flexible width", "_is_compact" in results and "title.custom_minimum_size = Vector2(0, 0)" in results)
-check("map picker card grid adapts to phone and tablet widths", "var responsive_columns := 1 if viewport_width < 760.0" in read("scripts/map_picker.gd"))
+check("map picker is a carousel (arrows, swipe, thumbnail strip) that fits phone and tablet", all(x in read("scripts/map_picker.gd") for x in ["func _step(", "_on_card_input", "_strip_scroll", "UIKit.centered(panel"]))
 check("customization content can scroll when stacked on short screens", "var body_scroll := ScrollContainer.new()" in custom and "body_scroll.add_child(body)" in custom)
 
 from invariant_test_utils import register_checks, run_checks

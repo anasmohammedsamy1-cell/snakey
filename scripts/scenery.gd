@@ -4,8 +4,70 @@ extends RefCounted
 ## Everything is built from Godot primitive meshes: no external models required.
 ## Usage: const Scenery := preload("res://scripts/scenery.gd")
 
+const FLOOR_DETAIL_SHADER := preload("res://assets/shaders/floor_detail.gdshader")
+
+
+# ---------------------------------------------------------------------------
+# Shared resource cache. Identical procedural materials / meshes are built once
+# and reused; callers that need to tweak a property use dup_material() (or dup
+# inside the build call) to get their own mutable copy. Bounded: when a cache
+# fills, it is cleared wholesale - cached values are cheap and re-derivable.
+const RESOURCE_CACHE_LIMIT := 512
+
+static var _mat_cache: Dictionary = {}
+static var _floor_cache: Dictionary = {}
+static var _mesh_cache: Dictionary = {}
+static var _res_stats := {
+	"mat_hits": 0, "mat_misses": 0,
+	"floor_hits": 0, "floor_misses": 0,
+	"mesh_hits": 0, "mesh_misses": 0,
+	"duplicates": 0, "evictions": 0,
+}
+
+
+static func _f3(v: float) -> String:
+	return "%.4f" % v
+
+
+static func _color_key(color: Color) -> String:
+	return "%s,%s,%s,%s" % [_f3(color.r), _f3(color.g), _f3(color.b), _f3(color.a)]
+
+
+static func _cache_put(cache: Dictionary, key: String, value: Resource) -> void:
+	if cache.size() >= RESOURCE_CACHE_LIMIT:
+		cache.clear()               # bounded growth; entries re-derive on demand
+		_res_stats["evictions"] = int(_res_stats["evictions"]) + 1
+	cache[key] = value
+
+
+## Returns an independent, mutable copy of a shared material. Tracked for the
+## debug statistics ("duplicates").
+static func dup_material(m: Material) -> Material:
+	_res_stats["duplicates"] = int(_res_stats["duplicates"]) + 1
+	return m.duplicate()
+
+
+## Debug statistics snapshot for the resource caches (does not reset).
+static func cache_stats() -> Dictionary:
+	return {
+		"mat_hits": int(_res_stats["mat_hits"]), "mat_misses": int(_res_stats["mat_misses"]),
+		"mat_cache_size": _mat_cache.size(),
+		"floor_hits": int(_res_stats["floor_hits"]), "floor_misses": int(_res_stats["floor_misses"]),
+		"floor_cache_size": _floor_cache.size(),
+		"mesh_hits": int(_res_stats["mesh_hits"]), "mesh_misses": int(_res_stats["mesh_misses"]),
+		"mesh_cache_size": _mesh_cache.size(),
+		"duplicates": int(_res_stats["duplicates"]), "evictions": int(_res_stats["evictions"]),
+		"limit": RESOURCE_CACHE_LIMIT,
+	}
+
 
 static func mat(color: Color, roughness := 0.75, unshaded := false, alpha := 1.0) -> StandardMaterial3D:
+	var rim_enabled := not _potato()
+	var key := "%s|%s|%d|%s|%d" % [_color_key(color), _f3(roughness), 1 if unshaded else 0, _f3(alpha), int(rim_enabled)]
+	var cached: StandardMaterial3D = _mat_cache.get(key) as StandardMaterial3D
+	if cached != null:
+		_res_stats["mat_hits"] = int(_res_stats["mat_hits"]) + 1
+		return cached
 	var m := StandardMaterial3D.new()
 	m.albedo_color = Color(color.r, color.g, color.b, alpha)
 	m.roughness = roughness
@@ -14,21 +76,52 @@ static func mat(color: Color, roughness := 0.75, unshaded := false, alpha := 1.0
 	if unshaded:
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	else:
-		# Soft cartoon rim light: makes every shape pop and look less flat.
-		m.rim_enabled = true
-		m.rim = 0.28
-		m.rim_tint = 0.55
+		if rim_enabled:
+			# Soft cartoon rim light: makes every shape pop and look less flat.
+			m.rim_enabled = true
+			m.rim = 0.28
+			m.rim_tint = 0.55
 	if alpha < 1.0:
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_cache_put(_mat_cache, key, m)
+	_res_stats["mat_misses"] = int(_res_stats["mat_misses"]) + 1
+	return m
+
+
+## Procedural floor / tile material: soft checker + thin darker seams + a
+## noise-free gradient, all computed in the shader (no texture lookups).
+## MEDIUM / HIGH get the detail; LOW / POTATO keep the plain flat material.
+static func floor_mat(color: Color, roughness := 0.7, cell_size := 1.5) -> Material:
+	if _low_quality():
+		return mat(color, roughness)   # plain flat material on LOW / POTATO (cached there)
+	# MEDIUM and HIGH share the same shader settings: one shared cache entry.
+	var key := "floor|%s|%s|%s" % [_color_key(color), _f3(roughness), _f3(cell_size)]
+	var cached: Material = _floor_cache.get(key) as Material
+	if cached != null:
+		_res_stats["floor_hits"] = int(_res_stats["floor_hits"]) + 1
+		return cached
+	var m := ShaderMaterial.new()
+	m.shader = FLOOR_DETAIL_SHADER
+	m.set_shader_parameter("base_color", Color(color.r, color.g, color.b, color.a))
+	m.set_shader_parameter("roughness", roughness)
+	m.set_shader_parameter("cell_size", cell_size)
+	_cache_put(_floor_cache, key, m)
+	_res_stats["floor_misses"] = int(_res_stats["floor_misses"]) + 1
 	return m
 
 
 static func _low_quality() -> bool:
-	return SettingsManager != null and int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_LOW
+	return SettingsManager != null and int(SettingsManager.get_setting("graphics_preset")) in [SettingsManager.PRESET_LOW, SettingsManager.PRESET_POTATO]
+
+
+## POTATO is even cheaper than LOW: it reads the same weak-device paths plus
+## its own extra reductions (detail factor, cloud puffs, sky decor).
+static func _potato() -> bool:
+	return SettingsManager != null and int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_POTATO
 
 
 static func _detail_factor() -> float:
-	# Three distinct geometry tiers: Low .5x, Medium .75x, High 1x.
+	# Four distinct geometry tiers: Potato .35x, Low .5x, Medium .75x, High 1x.
 	if SettingsManager == null:
 		return 0.75
 	match int(SettingsManager.get_setting("graphics_preset")):
@@ -36,6 +129,8 @@ static func _detail_factor() -> float:
 			return 0.5
 		SettingsManager.PRESET_HIGH:
 			return 1.0
+		SettingsManager.PRESET_POTATO:
+			return 0.35
 		_:
 			return 0.75
 
@@ -60,44 +155,86 @@ static func mesh_instance(mesh: Mesh, material: Material, pos := Vector3.ZERO, c
 
 
 static func sphere(radius: float, segments := 16, rings := 8) -> SphereMesh:
+	var segs := detail_segments(segments)
+	var rgs := detail_rings(rings)
+	var key := "sphere|%s|%d|%d" % [_f3(radius), segs, rgs]
+	var cached: SphereMesh = _mesh_cache.get(key) as SphereMesh
+	if cached != null:
+		_res_stats["mesh_hits"] = int(_res_stats["mesh_hits"]) + 1
+		return cached
 	var s := SphereMesh.new()
 	s.radius = radius
 	s.height = radius * 2.0
-	s.radial_segments = detail_segments(segments)
-	s.rings = detail_rings(rings)
+	s.radial_segments = segs
+	s.rings = rgs
+	_cache_put(_mesh_cache, key, s)
+	_res_stats["mesh_misses"] = int(_res_stats["mesh_misses"]) + 1
 	return s
 
 
 static func box(size: Vector3) -> BoxMesh:
+	var key := "box|%s,%s,%s" % [_f3(size.x), _f3(size.y), _f3(size.z)]
+	var cached: BoxMesh = _mesh_cache.get(key) as BoxMesh
+	if cached != null:
+		_res_stats["mesh_hits"] = int(_res_stats["mesh_hits"]) + 1
+		return cached
 	var b := BoxMesh.new()
 	b.size = size
+	_cache_put(_mesh_cache, key, b)
+	_res_stats["mesh_misses"] = int(_res_stats["mesh_misses"]) + 1
 	return b
 
 
 static func cylinder(top: float, bottom: float, height: float, segments := 24) -> CylinderMesh:
+	var segs := detail_segments(segments)
+	var key := "cyl|%s|%s|%s|%d" % [_f3(top), _f3(bottom), _f3(height), segs]
+	var cached: CylinderMesh = _mesh_cache.get(key) as CylinderMesh
+	if cached != null:
+		_res_stats["mesh_hits"] = int(_res_stats["mesh_hits"]) + 1
+		return cached
 	var c := CylinderMesh.new()
 	c.top_radius = top
 	c.bottom_radius = bottom
 	c.height = height
-	c.radial_segments = detail_segments(segments)
+	c.radial_segments = segs
+	_cache_put(_mesh_cache, key, c)
+	_res_stats["mesh_misses"] = int(_res_stats["mesh_misses"]) + 1
 	return c
 
 
 static func capsule(radius: float, height: float) -> CapsuleMesh:
+	var segs := detail_segments(16)
+	var rgs := detail_rings(6)
+	var key := "cap|%s|%s|%d|%d" % [_f3(radius), _f3(height), segs, rgs]
+	var cached: CapsuleMesh = _mesh_cache.get(key) as CapsuleMesh
+	if cached != null:
+		_res_stats["mesh_hits"] = int(_res_stats["mesh_hits"]) + 1
+		return cached
 	var c := CapsuleMesh.new()
 	c.radius = radius
 	c.height = height
-	c.radial_segments = detail_segments(16)
-	c.rings = detail_rings(6)
+	c.radial_segments = segs
+	c.rings = rgs
+	_cache_put(_mesh_cache, key, c)
+	_res_stats["mesh_misses"] = int(_res_stats["mesh_misses"]) + 1
 	return c
 
 
 static func torus(inner_radius: float, outer_radius: float, rings := 48, ring_segments := 8) -> TorusMesh:
+	var rgs := detail_segments(rings, 12)
+	var segs := detail_segments(ring_segments, 4)
+	var key := "torus|%s|%s|%d|%d" % [_f3(inner_radius), _f3(outer_radius), rgs, segs]
+	var cached: TorusMesh = _mesh_cache.get(key) as TorusMesh
+	if cached != null:
+		_res_stats["mesh_hits"] = int(_res_stats["mesh_hits"]) + 1
+		return cached
 	var t := TorusMesh.new()
 	t.inner_radius = inner_radius
 	t.outer_radius = outer_radius
-	t.rings = detail_segments(rings, 12)
-	t.ring_segments = detail_segments(ring_segments, 4)
+	t.rings = rgs
+	t.ring_segments = segs
+	_cache_put(_mesh_cache, key, t)
+	_res_stats["mesh_misses"] = int(_res_stats["mesh_misses"]) + 1
 	return t
 
 
@@ -109,10 +246,10 @@ static func build_environment(parent: Node, shadows: bool, graphics_preset: int)
 	configure_environment(env, graphics_preset)
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.tonemap_exposure = 0.92
-	env.adjustment_enabled = true
-	# Keep the vivid colour grade the same at every preset level.
-	env.adjustment_contrast = 1.2
-	env.adjustment_saturation = 1.32
+	env.adjustment_enabled = graphics_preset != SettingsManager.PRESET_POTATO
+	# Vivid colour grade (shared by every preset): saturated hues, punchy contrast.
+	env.adjustment_contrast = 1.34
+	env.adjustment_saturation = 1.45
 	env.fog_enabled = graphics_preset == SettingsManager.PRESET_HIGH
 	env.fog_light_color = Color(0.78, 0.9, 1.0)
 	env.fog_density = 0.0025
@@ -162,10 +299,10 @@ static func configure_environment(env: Environment, graphics_preset: int) -> voi
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 1.0 if graphics_preset == SettingsManager.PRESET_HIGH else (0.88 if graphics_preset == SettingsManager.PRESET_MEDIUM else 0.78)
-	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.2
-	env.adjustment_saturation = 1.32
+	env.ambient_light_energy = 1.0 if graphics_preset == SettingsManager.PRESET_HIGH else (0.88 if graphics_preset == SettingsManager.PRESET_MEDIUM else (0.72 if graphics_preset == SettingsManager.PRESET_POTATO else 0.78))
+	env.adjustment_enabled = graphics_preset != SettingsManager.PRESET_POTATO
+	env.adjustment_contrast = 1.34
+	env.adjustment_saturation = 1.45
 
 
 ## A field of puffy clouds rendered with a single MultiMesh (one draw call).
@@ -178,7 +315,7 @@ static func build_cloud_field(parent: Node, count: int, min_radius: float, max_r
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = sphere(1.0, 12, 6)
-	var puffs_per_cloud := 2 if _low_quality() else 4
+	var puffs_per_cloud := 1 if _potato() else (2 if _low_quality() else 4)
 	mm.instance_count = count * puffs_per_cloud
 	var i := 0
 	for c in count:
@@ -195,6 +332,10 @@ static func build_cloud_field(parent: Node, count: int, min_radius: float, max_r
 	mmi.multimesh = mm
 	mmi.material_override = mat(Color(1, 1, 1), 1.0, true)
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if _potato():
+		# Beyond camera reach ~110 units: cull (self-fade avoids a hard pop).
+		mmi.visibility_range_end = 130.0
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	parent.add_child(mmi)
 	return mmi
 
@@ -202,8 +343,12 @@ static func build_cloud_field(parent: Node, count: int, min_radius: float, max_r
 ## Huge flat "cloud sea" far below the arena: marks the fall zone visually.
 static func build_cloud_sea(parent: Node, y: float, radius: float) -> MeshInstance3D:
 	var disc := cylinder(radius, radius, 0.5, 40)
-	var mi := mesh_instance(disc, mat(Color(0.95, 0.97, 1.0), 1.0, true, 0.9), Vector3(0, y, 0), false)
+	var alpha := 1.0 if _potato() else 0.9
+	var mi := mesh_instance(disc, mat(Color(0.95, 0.97, 1.0), 1.0, true, alpha), Vector3(0, y, 0), false)
 	mi.name = "CloudSea"
+	if _potato():
+		mi.visibility_range_end = 120.0
+		mi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	parent.add_child(mi)
 	return mi
 

@@ -6,6 +6,8 @@ extends Node
 const GameConstants := preload("res://scripts/game_constants.gd")
 const PlayerScene := preload("res://scenes/player.tscn")
 const PropsLib := preload("res://scripts/props.gd")
+const PowerupsScript := preload("res://scripts/powerups.gd")
+const AccessoriesLib := preload("res://scripts/accessories.gd")
 const THROW_RELEASE_DELAY := GameConstants.THROW_TOTAL_TIME   # 2x faster wind-up + release; matches ContenderAnimator.THROW_TOTAL
 
 enum State { WAITING, COUNTDOWN, PLAYING, ENDED }
@@ -28,6 +30,7 @@ var elapsed := 0.0
 var remaining: float = GameConstants.ROUND_DURATION
 var countdown_left := 0.0
 var practice := false
+var powerups: Node            # floor power-ups (scripts/powerups.gd)
 var is_host := true
 
 var players: Dictionary = {}     # id -> player node
@@ -73,6 +76,14 @@ var current_event: int = ArenaEvent.NONE
 var event_remaining := 0.0
 var _event_cycle_timer := 16.0
 var _last_event := ArenaEvent.NONE
+var _sd_active := false           # Sudden Death: the outer floor tiers / tiles start to crumble in the last quarter
+var _sd_timer := 0.0
+var _sd_loose_guard := 2          # never drop the last few crumbling tiles: the round must stay playable
+var _sd_pieces: Array[Node] = []  # cached arena_crumble_tiles list; rebuilt once per round
+var _sd_scanned := false
+var _last_timer_secs: int = -1    # timer_updated is only emitted when the displayed value changes
+var _last_timer_flash: int = -1
+var _music_accum := 1.0           # music intensity is recomputed at 4 Hz (1.0 forces an immediate first pass)
 
 
 func setup(arena_node: Node3D) -> void:
@@ -95,6 +106,10 @@ func setup(arena_node: Node3D) -> void:
 	remaining = round_duration
 	_build_teams()
 	_spawn_all()
+	powerups = PowerupsScript.new()
+	powerups.name = "PowerUps"          # same node path on every peer (needed for the RPCs)
+	add_child(powerups)
+	powerups.setup(self)
 	if mode == GameConstants.MODE_HIDE and is_host:
 		_hs_assign_props()
 	if NetworkManager.online:
@@ -184,27 +199,34 @@ func _spawn_all() -> void:
 		var info: Dictionary = NetworkManager.get_player_info(int(id))
 		var name_text := str(info.get("name", "Player"))
 		var color := int(info.get("color", 0))
+		var hat := str(info.get("hat", ""))
+		var detail := int(info.get("detail", -1))
 		if not NetworkManager.online:
 			name_text = SaveManager.player_name
 			color = SaveManager.color_index
+			hat = SaveManager.equipped_hat
+			detail = SaveManager.detail_color_index
 		var grp := 1 if role_of(int(id)) == GameConstants.HS_ROLE_SEEKER else 0
-		_spawn_player(int(id), name_text, color, false, counters[grp], grp)
+		_spawn_player(int(id), name_text, color, false, counters[grp], grp, hat, detail)
 		counters[grp] += 1
 	for b in bot_count:
 		var bid := 100 + b
 		var bgrp := 1 if role_of(bid) == GameConstants.HS_ROLE_SEEKER else 0
 		var base_color := SaveManager.color_index
-		_spawn_player(bid, "Bot %d" % (b + 1), (base_color + 1 + b * 2) % GameConstants.color_count(), true, counters[bgrp], bgrp)
+		var bot_hats: Array = AccessoriesLib.ids()
+		var bot_hat: String = str(bot_hats[(b * 3 + 1) % bot_hats.size()]) if b % 2 == 0 else ""
+		_spawn_player(bid, "Bot %d" % (b + 1), (base_color + 1 + b * 2) % GameConstants.color_count(), true, counters[bgrp], bgrp, bot_hat)
 		counters[bgrp] += 1
 	players_changed.emit()
 
 
-func _spawn_player(id: int, pname: String, color: int, bot: bool, spawn_index: int, group := 0) -> void:
+func _spawn_player(id: int, pname: String, color: int, bot: bool, spawn_index: int, group := 0, hat := "", detail := -1) -> void:
 	var p := PlayerScene.instantiate()
 	var tm := int(team_of.get(id, 0))
 	if is_team_mode() and mode == GameConstants.MODE_TEAMS:
 		color = GameConstants.team_color_index(tm)     # team colour on the whole character
-	p.setup(id, pname, color, bot)
+	p.setup(id, pname, color, bot, detail)
+	p.hat_id = hat
 	p.set_team_info(tm, mode == GameConstants.MODE_TEAMS, role_of(id))
 	p.round_manager = self
 	arena.get_node("Players").add_child(p)
@@ -247,7 +269,19 @@ func _process(delta: float) -> void:
 					AudioManager.play_ui("go", 0.0)
 			else:
 				remaining = maxf(round_duration - elapsed, 0.0)
-			timer_updated.emit(remaining)
+			# Emit only when the displayed value changes: whole-second ticks, plus the
+			# blink phase while the timer is in the <=10s red-flash window (HUD derives
+			# text and color entirely from the received `remaining`).
+			var timer_secs := int(ceil(remaining))
+			var timer_flash := (int(remaining * 2.0) % 2) if remaining <= 10.0 else -1
+			if timer_secs != _last_timer_secs or timer_flash != _last_timer_flash:
+				_last_timer_secs = timer_secs
+				_last_timer_flash = timer_flash
+				timer_updated.emit(remaining)
+			_music_accum += delta
+			if _music_accum >= 0.25:
+				_music_accum = 0.0
+				_update_music_intensity()
 			if is_host:
 				_host_check_falls()
 				_process_grabs(delta)
@@ -255,6 +289,7 @@ func _process(delta: float) -> void:
 				_process_pending_elims()
 				_ko_process_respawns()
 				_process_arena_events(delta)
+				_process_sudden_death(delta)
 				if NetworkManager.online:
 					_time_sync_accum += delta
 					if _time_sync_accum >= 0.5:
@@ -271,6 +306,136 @@ func _process(delta: float) -> void:
 # ---------------------------------------------------------------------------
 # Arena events — short, readable gameplay twists. The host selects and broadcasts
 # the event; movement modifiers are applied locally by each authoritative player.
+
+## Last 25 % of a classic / team round on a "shrinkable" map: the floor really gives way, so the
+## safe area shrinks and the survivors are forced together instead of waiting out the clock.
+## Two kinds of pieces cooperate, and both use the same host-authority flow:
+##   * arena_layer.gd  - whole floor tiers (outermost first, one per tick);
+##   * falling_tile.gd - single crumbling tiles (up to 3 per tick, farthest first).
+## Maps that cannot shrink simply never announce it (see "shrinkable" in map_builder.gd).
+## Layered music: calm -> tension (last 30 s or <= 4 players left) -> chaos (Sudden Death). Runs on every peer.
+func _update_music_intensity() -> void:
+	if mode == GameConstants.MODE_HIDE:
+		AudioManager.set_music_intensity(1 if remaining < 20.0 else 0)
+		return
+	var level := 0
+	if remaining < 30.0 or (not is_respawn_score_mode() and players.size() > 4 and _count_alive() <= 4):
+		level = 1
+	if _sd_active or (remaining < 10.0 and not is_respawn_score_mode()):
+		level = 2
+	AudioManager.set_music_intensity(level)
+
+
+func _exit_tree() -> void:
+	Engine.time_scale = 1.0              # never leave a hit-stop running when the round scene goes away
+	AudioManager.set_music_intensity(0)
+
+
+func _process_sudden_death(delta: float) -> void:
+	if mode == GameConstants.MODE_HIDE or is_respawn_score_mode():
+		return
+	if not bool(_map_info().get("shrinkable", false)):
+		return
+	if remaining > round_duration * 0.25:
+		return
+	if not _sd_scanned:
+		_sd_scanned = true
+		for node in get_tree().get_nodes_in_group("arena_crumble_tiles"):
+			if node.has_method("can_be_event_triggered"):
+				_sd_pieces.append(node)
+	var pieces: Array[Node] = []
+	for p in _sd_pieces:
+		if is_instance_valid(p) and p.can_be_event_triggered():
+			pieces.append(p)
+	_sd_pieces = pieces  # drop freed/dropped tiles so later ticks stay cheap
+	if pieces.is_empty():
+		return
+	if not _sd_active:
+		_sd_active = true
+		_sd_timer = 1.5
+		_sd_loose_guard = maxi(2, int(round(_count_loose(pieces) * 0.25)))
+		announce.emit(t("sudden_death"), 1.8)
+		AudioManager.play("alarm", 0.0, -3.0)
+		if NetworkManager.online:
+			_rpc_sudden_death.rpc()
+		return
+	_sd_timer -= delta
+	if _sd_timer > 0.0:
+		return
+	_sd_timer = 2.4
+	# Whole floor tiers go first, one per tick: that is the big, readable "the arena just got smaller".
+	var tier: Node = _next_tier(pieces)
+	if tier != null:
+		_collapse_piece(tier)
+		return
+	var loose := _loose_pieces(pieces)
+	if loose.size() <= _sd_loose_guard:
+		return
+	loose.sort_custom(func(a, b) -> bool: return _piece_rank(a) > _piece_rank(b))
+	for i in mini(3, loose.size()):
+		_collapse_piece(loose[i])
+
+
+## True on maps that can actually shrink (used by the HUD/tests).
+func sudden_death_supported() -> bool:
+	return bool(_map_info().get("shrinkable", false))
+
+
+func _map_info() -> Dictionary:
+	if arena == null or not is_instance_valid(arena):
+		return {}
+	var info: Variant = arena.get("map_info")
+	return info if info is Dictionary else {}
+
+
+## Higher rank = collapses first. Floor tiers return ~1e9 so they always beat single tiles.
+func _piece_rank(piece: Node) -> float:
+	if piece.has_method("collapse_rank"):
+		return float(piece.call("collapse_rank"))
+	return piece.global_position.length_squared()
+
+
+func _is_tier(piece: Node) -> bool:
+	return piece.has_method("collapse_rank")
+
+
+func _next_tier(pieces: Array) -> Node:
+	var best: Node = null
+	var best_rank := -1.0
+	for piece in pieces:
+		if not _is_tier(piece):
+			continue
+		var rank := _piece_rank(piece)
+		if rank > best_rank:
+			best_rank = rank
+			best = piece
+	return best
+
+
+func _loose_pieces(pieces: Array) -> Array:
+	var out: Array = []
+	for piece in pieces:
+		if not _is_tier(piece):
+			out.append(piece)
+	return out
+
+
+func _count_loose(pieces: Array) -> int:
+	return _loose_pieces(pieces).size()
+
+
+func _collapse_piece(piece: Node) -> void:
+	piece.trigger()
+	if NetworkManager.online:
+		piece._rpc_trigger.rpc()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rpc_sudden_death() -> void:
+	_sd_active = true
+	announce.emit(t("sudden_death"), 1.8)
+	AudioManager.play("alarm", 0.0, -3.0)
+
 
 func _process_arena_events(delta: float) -> void:
 	if mode == GameConstants.MODE_HIDE:
@@ -404,6 +569,8 @@ func _begin_playing() -> void:
 
 func _apply_state(new_state: int) -> void:
 	state = new_state
+	if new_state != State.PLAYING:
+		AudioManager.set_music_intensity(0)
 	match new_state:
 		State.COUNTDOWN:
 			countdown_left = countdown_time
@@ -415,6 +582,12 @@ func _apply_state(new_state: int) -> void:
 			# not from scene construction (loading/countdown time must not consume it).
 			_event_cycle_timer = _adaptive_event_interval()
 			_last_event = ArenaEvent.NONE
+			_sd_active = false
+			_sd_pieces.clear()
+			_sd_scanned = false
+			_last_timer_secs = -1
+			_last_timer_flash = -1
+			_music_accum = 1.0
 			if is_host:
 				_set_arena_event(ArenaEvent.NONE, 0.0)
 			else:
@@ -561,7 +734,10 @@ func _eliminate(id: int, rank: int) -> void:
 			p.eliminate()
 		if p.is_local:
 			local_player_eliminated.emit()
-	AudioManager.play_character("fall", 0.05)
+	if p != null:
+		AudioManager.play_character_3d("fall", (p as Node3D).global_position)
+	else:
+		AudioManager.play_character("fall", 0.05)
 	player_eliminated.emit(id, pname, _count_alive())
 	players_changed.emit()
 
@@ -624,7 +800,10 @@ func _on_practice_fall(p: Node) -> void:
 	if arena != null:
 		arena.spawn_poof(p.last_position + Vector3(0, 1, 0))
 	p.eliminate()
-	AudioManager.play_character("fall", 0.05)
+	if p != null:
+		AudioManager.play_character_3d("fall", (p as Node3D).global_position)
+	else:
+		AudioManager.play_character("fall", 0.05)
 	if p.is_local:
 		announce.emit(t("you_fell"), 1.5)
 	player_eliminated.emit(id, p.player_name, _count_alive())
@@ -749,7 +928,8 @@ func _server_arm(attacker_id: int, arm_mode: int, target_id: int, dir: Vector3, 
 			d = Vector3(1, 0, 0)
 		d = d.normalized()
 		# The impulse is defined by the host from the charge: weak tap = small push, held = strong push.
-		_deliver_push(target_id, d * GameConstants.punch_force(charge) + Vector3.UP * GameConstants.punch_lift(charge), GameConstants.PUNCH_FORCE, GameConstants.PUNCH_LIFT)
+		var fist: float = float(powerups.consume_fist(attacker_id)) if powerups != null else 1.0
+		_deliver_push(target_id, (d * GameConstants.punch_force(charge) + Vector3.UP * GameConstants.punch_lift(charge)) * fist, GameConstants.PUNCH_FORCE * fist, GameConstants.PUNCH_LIFT * fist)
 	else:
 		st["hits"] = int(st["hits"]) + 1
 		st["grabs"] = int(st["grabs"]) + 1
@@ -1134,7 +1314,10 @@ func _apply_ko_event(victim: int, killer: int, seq: int, snap: Dictionary) -> vo
 	if killer != 0 and local_player != null and killer == local_player.peer_id:
 		announce.emit(t("ko_you_scored"), 1.0)
 		GameManager.vibrate(60)
-	AudioManager.play_character("fall", 0.05)
+	if v_node != null and is_instance_valid(v_node):
+		AudioManager.play_character_3d("fall", (v_node as Node3D).global_position)
+	else:
+		AudioManager.play_character("fall", 0.05)
 	knockout_scored.emit(killer, victim, kname, vname)
 	players_changed.emit()
 
@@ -1316,7 +1499,7 @@ func _end_round(reason: String) -> void:
 				tag = t("hs_hider") if role_of(int(id)) == GameConstants.HS_ROLE_HIDER else t("hs_seeker")
 			if not p.is_bot:
 				NetworkManager.add_score(int(id), pts)
-			results.append({"id": id, "name": p.player_name, "color": GameConstants.team_color_index(tm) if mode == GameConstants.MODE_TEAMS else p.color_index, "rank": 1 if won else 2, "points": pts, "falls": 0, "total": NetworkManager.get_score(int(id)), "bot": p.is_bot, "stats": stats.get(id, {}), "tag": tag, "team": tm})
+			results.append({"id": id, "name": p.player_name, "color": GameConstants.team_color_index(tm) if mode == GameConstants.MODE_TEAMS else p.color_index, "rank": 1 if won else 2, "points": pts, "falls": int(falls.get(id, 0)), "total": NetworkManager.get_score(int(id)), "bot": p.is_bot, "stats": stats.get(id, {}), "tag": tag, "team": tm})
 		results.sort_custom(func(x, y) -> bool: return int(x["rank"]) < int(y["rank"]))
 		NetworkManager.broadcast_players()
 	elif is_respawn_score_mode():
@@ -1341,7 +1524,7 @@ func _end_round(reason: String) -> void:
 				var pts := maxi(0, 4 - rank)
 				if not p.is_bot:
 					NetworkManager.add_score(int(id), pts)
-				results.append({"id": id, "name": p.player_name, "color": p.color_index, "rank": rank, "points": pts, "falls": 0, "total": NetworkManager.get_score(int(id)), "bot": p.is_bot, "stats": stats.get(id, {})})
+				results.append({"id": id, "name": p.player_name, "color": p.color_index, "rank": rank, "points": pts, "falls": int(falls.get(id, 0)), "total": NetworkManager.get_score(int(id)), "bot": p.is_bot, "stats": stats.get(id, {})})
 			results.sort_custom(func(x, y) -> bool: return int(x["rank"]) < int(y["rank"]))
 			NetworkManager.broadcast_players()
 	_apply_end(results, reason, win_team)
@@ -1398,7 +1581,10 @@ func _apply_end(results: Array, reason: String, win_team := -1) -> void:
 	if reason == "draw" or (not is_team_mode() and winners.size() > 1 and (is_respawn_score_mode() or reason == "last_standing")):
 		local_won = false
 	if not practice and local_in_results:
-		SaveManager.record_match(local_won)
+		var my_kos := 0
+		if local_player != null:
+			my_kos = int(stats.get(local_player.peer_id, {}).get("kos", 0))
+		SaveManager.record_match(local_won, my_kos)
 	AudioManager.play_ui("victory", 0.0)
 	round_ended.emit(results, headline)
 

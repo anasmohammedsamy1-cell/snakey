@@ -24,7 +24,7 @@ for f in gd:
         if t.count(a) != t.count(b):
             errors.append(f"{f}: unbalanced {a}{b} ({t.count(a)} vs {t.count(b)})")
 
-for f in gd + glob.glob("scenes/**/*.tscn", recursive=True) + ["project.godot", "export_presets.cfg"]:
+for f in gd + glob.glob("scenes/**/*.tscn", recursive=True) + [x for x in ("project.godot", "export_presets.cfg") if os.path.exists(x)]:
     for m in re.finditer(r"res://[\w/\.\-]+", rd(f)):
         p = m.group(0)
         if p.endswith("/") or os.path.exists(p[6:]):

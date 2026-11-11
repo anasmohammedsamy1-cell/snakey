@@ -19,7 +19,7 @@ config/description="Funny 3D LAN multiplayer party game. Jump, push and survive 
 run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 boot_splash/bg_color=Color(0.23, 0.58, 0.98, 1)
-config/icon="uid://dnyqkmabxeimb"
+config/icon="res://NewGlobalGameIcon.svg"
 
 [audio]
 
@@ -33,6 +33,8 @@ AudioManager="*res://scripts/audio_manager.gd"
 NetworkManager="*res://scripts/network_manager.gd"
 GameManager="*res://scripts/game_manager.gd"
 VoiceChat="*res://scripts/voice_chat.gd"
+CharacterAnimation="*res://scripts/character/character_animation_scheduler.gd"
+MCPRuntimeProbe="*uid://ccjof6txapfes"
 
 [display]
 
@@ -41,6 +43,10 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/handheld/orientation=4
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
 
 [gui]
 

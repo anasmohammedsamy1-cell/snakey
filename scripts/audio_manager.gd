@@ -9,6 +9,7 @@ const MUSIC_RATE := 22050
 const MUSIC_BASE_DB := -12.0
 const MUSIC_DUCK_DB := -9.0
 const POOL_SIZE := 14
+const POOL_SIZE_3D := 4
 const SOUND_COOLDOWN := 0.045
 
 ## ---- Egyptian comedy sound-effect layer ---------------------------------------
@@ -23,7 +24,7 @@ const USE_TTS := false
 ## Only the recorded clips make sound. Anything without a recorded clip stays SILENT:
 ## no synthesized beeps and no generated music. (Flip to true to bring them back.)
 const SYNTH_FALLBACK := false
-const GENERATED_MUSIC := false
+const GENERATED_MUSIC := true
 const VOICE_INTERRUPT := ["fall", "go", "victory", "hit"]
 ## event: [cooldown_sec, chance 0..1, min_volume_db]
 const VOICE_RULES := {
@@ -71,9 +72,13 @@ const OPTIONAL_FILES := {
 
 var _sfx: Dictionary = {}
 var _pool: Array[AudioStreamPlayer] = []
+var _pool3d: Array[AudioStreamPlayer3D] = []
 var _last_played: Dictionary = {}
 var _music_player: AudioStreamPlayer
 var _music_thread: Thread
+var _layer_players: Array[AudioStreamPlayer] = []     # [pulse, chaos] extra music layers (generated music only)
+var _layer_db: Array[float] = [-60.0, -60.0]
+var _music_level := 0                                 # 0 calm, 1 pulse (tension), 2 chaos (sudden death)
 var _duck_db := 0.0
 var _voice_files: Dictionary = {}
 var _voice_last: Dictionary = {}
@@ -89,6 +94,14 @@ func _ready() -> void:
 		p.bus = "SFX"
 		add_child(p)
 		_pool.append(p)
+	for i in POOL_SIZE_3D:
+		var p := AudioStreamPlayer3D.new()
+		p.attenuation_model = AudioStreamPlayer3D.ATTENUATION_LOGARITHMIC
+		p.max_distance = 12.0
+		p.unit_size = 1.5
+		p.bus = "Character"
+		add_child(p)
+		_pool3d.append(p)
 	if SYNTH_FALLBACK:
 		_generate_sfx()
 	_setup_voice()
@@ -109,6 +122,15 @@ func _process(delta: float) -> void:
 		target = MUSIC_DUCK_DB
 	_duck_db = move_toward(_duck_db, target, 40.0 * delta)
 	_music_player.volume_db = MUSIC_BASE_DB + _duck_db
+	for i in _layer_players.size():
+		var want := MUSIC_BASE_DB + _duck_db - 3.0 if _music_level > i else -60.0
+		_layer_db[i] = move_toward(_layer_db[i], want, 70.0 * delta)
+		_layer_players[i].volume_db = _layer_db[i]
+
+
+## 0 = calm loop, 1 = adds the tension pulse, 2 = adds the chaos layer (all layers stay in sync).
+func set_music_intensity(level: int) -> void:
+	_music_level = clampi(level, 0, 2)
 
 
 ## Background music: res://assets/audio/music.ogg if present, otherwise a small
@@ -137,17 +159,60 @@ func _start_music() -> void:
 
 
 func _music_worker() -> void:
-	var buf := _build_music()
-	_on_music_built.call_deferred(buf)
+	var bufs: Array = [_build_music(), _build_music_extra(1), _build_music_extra(2)]
+	_on_music_built.call_deferred(bufs)
 
 
-func _on_music_built(buf: PackedFloat32Array) -> void:
+func _on_music_built(bufs: Array) -> void:
 	if _music_thread != null and _music_thread.is_started():
 		_music_thread.wait_to_finish()
 	if _music_player == null:
 		return
-	_music_player.stream = _make_stream(buf, true, 1.0, MUSIC_RATE, 0.5)
+	_music_player.stream = _make_stream(bufs[0], true, 1.0, MUSIC_RATE, 0.5)
+	_layer_players.clear()
+	for i in 2:
+		var lp := AudioStreamPlayer.new()
+		lp.bus = _valid_bus("Music")
+		lp.volume_db = -60.0
+		lp.stream = _make_stream(bufs[i + 1], true, 0.8, MUSIC_RATE, 0.5)
+		add_child(lp)
+		_layer_players.append(lp)
+	# Start every layer in the same frame so the loops stay aligned (all are exactly 4 bars long).
 	_music_player.play()
+	for lp in _layer_players:
+		lp.play()
+
+
+## Extra loop layers, same length / tempo as the base loop.
+## 1 = pulse: steady eighth-note hats, hand-clap on beats 3 and 7, octave bass pulse.
+## 2 = chaos: sixteenth hats, kick on every quarter, high warbling "zaghroota"-style trill.
+func _build_music_extra(layer: int) -> PackedFloat32Array:
+	var r := MUSIC_RATE
+	var eighth := 0.3
+	var bar := eighth * 8.0
+	var bass := [38.0, 38.0, 43.0, 45.0]
+	var b := PackedFloat32Array()
+	for i in 4:
+		var t0 := float(i) * bar
+		var bf := _note(float(bass[i]))
+		for k in 8:
+			var tk := t0 + float(k) * eighth
+			if layer == 1:
+				b = _add_tone(b, tk, 0.05, 1200.0, 900.0, 0.14, 1, 0.001, 2.0, r)
+				b = _add_tone(b, tk, 0.18, bf * 2.0, bf * 2.0, 0.16, 2, 0.01, 1.5, r)
+				if k == 2 or k == 6:
+					b = _add_tone(b, tk, 0.09, 1800.0, 1400.0, 0.26, 1, 0.001, 1.6, r)
+			else:
+				b = _add_tone(b, tk, 0.04, 1500.0, 1100.0, 0.12, 1, 0.001, 2.0, r)
+				b = _add_tone(b, tk + eighth * 0.5, 0.04, 1500.0, 1100.0, 0.10, 1, 0.001, 2.0, r)
+				if k % 2 == 0:
+					b = _add_tone(b, tk, 0.18, 150.0, 60.0, 0.5, 0, 0.002, 1.6, r)
+		if layer == 2 and i == 3:
+			for w in 16:
+				var f := 1500.0 if w % 2 == 0 else 1950.0
+				b = _add_tone(b, t0 + float(w) * 0.13, 0.12, f, f, 0.10, 0, 0.01, 1.2, r)
+	b.resize(int(4.0 * bar * float(r)))
+	return b
 
 
 ## Egyptian-flavoured loop: maqam Hijaz on D, "maqsum" drum pattern (Dum Tak _ Tak Dum _ Tak _),
@@ -226,7 +291,8 @@ func _find_arabic_voice() -> String:
 
 ## Returns true when the event was played by the voice layer, so the caller must not also
 ## play the synthesized beep. Events without a recorded file return false (beep fallback).
-func _voice_play(sfx_name: String, volume_db: float, category: String) -> bool:
+## When `position` is given, the sound is played as 3D positional audio attenuated by distance.
+func _voice_play(sfx_name: String, volume_db: float, category: String, position: Variant = null) -> bool:
 	if not _voice_ready or not VOICE_EVENTS.has(sfx_name):
 		return false
 	var files: Array = _voice_files.get(sfx_name, [])
@@ -251,7 +317,10 @@ func _voice_play(sfx_name: String, volume_db: float, category: String) -> bool:
 		_countdown_step += 1
 	if not files.is_empty():
 		var stream = files[step % files.size()] if sfx_name == "countdown" else files.pick_random()
-		_play_voice_stream(stream, volume_db, category)
+		if position != null:
+			_play_voice_stream_3d(stream, position as Vector3, volume_db, category)
+		else:
+			_play_voice_stream(stream, volume_db, category)
 		return true
 	var lines: Array = VOICE_LINES[sfx_name]
 	var text: String = str(lines[step % lines.size()] if sfx_name == "countdown" else lines.pick_random())
@@ -267,6 +336,43 @@ func _play_voice_stream(stream: AudioStream, volume_db: float, category: String)
 	player.stop()
 	player.stream = stream
 	player.bus = routed_bus
+	player.set_meta("audio_priority", _bus_priority(routed_bus))
+	player.set_meta("audio_started_ms", Time.get_ticks_msec())
+	player.pitch_scale = randf_range(0.96, 1.04)
+	var max_db := -2.0 if bool(SettingsManager.get_setting("audio_comfort")) else 0.0
+	player.volume_db = clampf(volume_db, -24.0, max_db)
+	player.play()
+
+
+func _find_free_player_3d(request_priority: int) -> AudioStreamPlayer3D:
+	for p in _pool3d:
+		if not p.playing:
+			return p
+	var candidate: AudioStreamPlayer3D = null
+	var lowest_priority := 999
+	var oldest_time := 2147483647
+	for p in _pool3d:
+		var priority := int(p.get_meta("audio_priority", 0))
+		var started := int(p.get_meta("audio_started_ms", 0))
+		if priority < lowest_priority or (priority == lowest_priority and started < oldest_time):
+			lowest_priority = priority
+			oldest_time = started
+			candidate = p
+	if request_priority < lowest_priority:
+		return null
+	return candidate
+
+
+## Plays a voice/sfx stream at a 3D position so it attenuates with distance from the listener.
+func _play_voice_stream_3d(stream: AudioStream, position: Vector3, volume_db: float, category: String) -> void:
+	var routed_bus := _valid_bus(category)
+	var player := _find_free_player_3d(_bus_priority(routed_bus))
+	if player == null:
+		return
+	player.stop()
+	player.stream = stream
+	player.bus = routed_bus
+	player.global_position = position
 	player.set_meta("audio_priority", _bus_priority(routed_bus))
 	player.set_meta("audio_started_ms", Time.get_ticks_msec())
 	player.pitch_scale = randf_range(0.96, 1.04)
@@ -309,6 +415,13 @@ func play_ui(sfx_name: String, pitch_variation := 0.03, volume_db := -4.0) -> vo
 
 
 func play_character(sfx_name: String, pitch_variation := 0.06, volume_db := -2.0) -> void:
+	play(sfx_name, pitch_variation, volume_db, "Character")
+
+
+## Plays a character voice/sfx at a 3D position with distance attenuation (fall voice, etc.).
+func play_character_3d(sfx_name: String, position: Vector3, pitch_variation := 0.06, volume_db := -2.0) -> void:
+	if _voice_play(sfx_name, volume_db, "Character", position):
+		return
 	play(sfx_name, pitch_variation, volume_db, "Character")
 
 
@@ -503,6 +616,20 @@ func _generate_sfx() -> void:
 	b = _add_tone(b, 0.0, 0.35, 1760.0, 1760.0, 0.2, 0, 0.004, 0.8)
 	_register("go", b)
 
+	# Sudden Death alarm: three rising two-tone siren blasts (host + clients hear the same clip).
+	b = PackedFloat32Array()
+	for i in 3:
+		var at := float(i) * 0.36
+		b = _add_tone(b, at, 0.17, 640.0, 640.0, 0.30, 1, 0.008, 1.0)
+		b = _add_tone(b, at + 0.18, 0.17, 860.0, 860.0, 0.30, 1, 0.008, 1.0)
+	_register("alarm", b, 0.9)
+
+	# Power-up pickup: quick rising two-note chirp
+	b = PackedFloat32Array()
+	b = _add_tone(b, 0.0, 0.09, 880.0, 880.0, 0.32, 1, 0.004, 1.0)
+	b = _add_tone(b, 0.08, 0.16, 1320.0, 1568.0, 0.32, 1, 0.004, 1.0)
+	_register("pickup", b, 0.9)
+
 	# Victory: happy arpeggio
 	b = PackedFloat32Array()
 	var melody := [72, 76, 79, 84, 79, 84]
@@ -512,4 +639,3 @@ func _generate_sfx() -> void:
 	b = _add_tone(b, 0.66, 0.9, _note(76), _note(76), 0.18, 0, 0.01, 1.0)
 	b = _add_tone(b, 0.66, 0.9, _note(79), _note(79), 0.18, 0, 0.01, 1.0)
 	_register("victory", b)
-

@@ -82,7 +82,18 @@ func start_solo(cfg: Dictionary, practice := false) -> void:
 
 
 func restart_solo() -> void:
+	if bool(SettingsManager.get_setting("rotate_maps")) and not practice_mode:
+		solo_cfg["map"] = next_map_id(int(solo_cfg.get("mode", 0)), int(solo_cfg.get("map", 0)))
 	start_solo(solo_cfg, practice_mode)
+
+
+## The next map of the same mode (wraps around). Used by the automatic map rotation.
+func next_map_id(mode: int, current: int) -> int:
+	var list: Array = GameConstants.maps_for_mode(mode)
+	if list.is_empty():
+		return current
+	var i := list.find(current)
+	return int(list[(i + 1) % list.size()])
 
 
 func default_cfg() -> Dictionary:

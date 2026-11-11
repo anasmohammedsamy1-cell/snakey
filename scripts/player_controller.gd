@@ -9,6 +9,11 @@ extends CharacterBody3D
 const GameConstants := preload("res://scripts/game_constants.gd")
 const MapBuilder := preload("res://scripts/map_builder.gd")
 const Scenery := preload("res://scripts/scenery.gd")
+const AccessoriesLib := preload("res://scripts/accessories.gd")
+
+const SHIELD_SHADER := preload("res://assets/shaders/shield_bubble.gdshader")
+const MAGNET_SHADER := preload("res://assets/shaders/magnet_field.gdshader")
+const BURST_SHADER := preload("res://assets/shaders/burst_glow.gdshader")
 
 signal jump_performed
 signal attack_performed
@@ -28,9 +33,36 @@ signal attack_performed
 
 const SYNC_INTERVAL := 0.05
 
+# Trauma-based screen shake: amplitude grows with trauma squared, so weak hits
+# stay subtle while heavy ones land hard.
+const TRAUMA_DECAY := 1.6              # trauma units lost per second
+const TRAUMA_MAX_OFFSET := 0.35        # metres of camera offset at full trauma
+const TRAUMA_MAX_ROLL := 1.5           # degrees of camera roll at full trauma
+const TRAUMA_LAND_SPEED := 12.0        # fall speed that counts as a hard landing
+const TRAUMA_KO_RANGE := 14.0          # nearby KO adds a small kick
+const SHAKE_NOISE_SPEED := 14.0        # noise units per second for h/v shake
+const SHAKE_ROLL_SPEED := 10.0         # noise units per second for roll
+const FOV_KICK_DEGREES := 8.0          # 70 -> 78 on dash
+const FOV_KICK_IN := 0.08
+const FOV_KICK_OUT := 0.3
+
 var peer_id := 1
 var player_name := "Player"
 var color_index := 0
+var detail_color_index := -1
+var hat_id := ""
+const SHIELD_PU := 2                    # power-up type index of the BUBBLE SHIELD (see powerups.gd)
+const MAGNET_PU := 4                    # power-up type index of the MAGNET (see powerups.gd)
+const MAGNET_RANGE := 6.5               # rivals inside this distance are drawn toward the carrier
+const MAGNET_PULL := 3.4                # peak pull speed (m/s) right next to the carrier
+const AI_TARGET_SCAN_INTERVAL := 0.22   # nearest-enemy refresh cadence for bots (seconds; inside the 0.15–0.25 s band)
+const AI_HAZARD_CHECK_INTERVAL := 0.15  # bot hazard proximity refresh cadence (seconds)
+var _pu_field: MeshInstance3D           # flat ring that shows the magnet range
+var _burst_shader_cache: ShaderMaterial = null  # cached burst glow material (created once, reused)
+var _aim_root: Node3D                   # punch aim line (local player only)
+var _aim_bar: MeshInstance3D
+var _aim_dot: MeshInstance3D
+var _aim_mat: StandardMaterial3D
 var is_bot := false
 var is_local := false
 var is_alive := true
@@ -52,6 +84,19 @@ var grab_phase := 0               # 0 = being pulled in, 1 = hanging in the hold
 var team := 0
 var role := 0                     # hide and seek: 0 none, 1 hider, 2 seeker
 var hug_timer := 0.0
+
+# --- Floor zone cache (map initialization) ---
+var _floor_zone_refs: Array[Node3D] = []        # cached floor zone node refs (rebuilt when map changes)
+var _zone_rebuild_stale: bool = true            # force rebuild of floor zone cache if map changed
+var _zone_last_scene: Node3D = null             # track current arena scene to detect map change
+var _zone_scratch: Dictionary = {}              # reusable scratch dict for influence_at calls (no per-zone alloc)
+
+# --- Magnet carrier cache (efficient collection of relevant magnet carriers) ---
+var _magnet_carriers: Array[Node3D] = []       # peer nodes carrying MAGNET_PU
+var _magnet_candidates_stale: bool = true      # rebuild magnet carrier list when ownership/powerup state changes
+var _zone_ice: bool = false                      # last queried floor zone ice state (no dict allocation)
+var _zone_belt: Vector3 = Vector3.ZERO           # last queried floor zone belt contribution
+var _zone_wind: Vector3 = Vector3.ZERO           # last queried floor zone wind contribution
 var hug_partner := 0
 var hug_victim := false
 var camera_delta := Vector2.ZERO
@@ -60,6 +105,11 @@ var input_enabled := true
 var _move_vel := Vector3.ZERO
 var _knockback := Vector3.ZERO
 var _stun := 0.0
+var _pu_type := -1                   # active power-up (-1 none): 0 speed, 1 boots, 2 shield, 3 fist, 4 magnet
+var _pu_time := 0.0
+var _pu_aura: MeshInstance3D
+var _marker_arrow: MeshInstance3D     # "this is YOU" arrow, local player only
+var _marker_t := 0.0
 var _push_timer := 0.0
 var _arm_total_cd := 1.0
 var _dash_timer := 0.0
@@ -73,7 +123,11 @@ var _footstep_timer := 0.12
 var _footstep_variant := false
 var _fall_reported := false
 var _sync_accum := 0.0
-var _shake := 0.0
+var _trauma := 0.0
+var _trauma_time := 0.0
+var _shake_noise: FastNoiseLite = null
+var _fov_tween: Tween = null
+var _base_fov := 70.0
 var _celebrating := false
 var _push_charge := 0.0           # charge (0..1) of the attack that is about to fire
 var _key_charge_t := 0.0
@@ -94,6 +148,21 @@ var _bot_timer := 0.0
 var _bot_target := Vector3.ZERO
 var _bot_jump_timer := 2.0
 
+# --- Bot AI staggered scheduling & arena-scoped caches (perf: no SceneTree scans per tick) ---
+var _ai_next_target_scan := 0.0        # seconds until the next nearest-enemy refresh (staggered per bot)
+var _ai_next_hazard_check := 0.0       # seconds until the next hazard proximity evaluation (staggered per bot)
+var _ai_target: Node = null            # cached nearest-enemy reference (reacquired immediately if it becomes invalid)
+var _ai_arena: Node = null             # arena the caches below were built for
+var _ai_map_info: Dictionary = {}      # cached arena map_info (read-only)
+var _ai_hazards: Array[Node3D] = []    # cached hazard marker refs (rebuilt only when the arena changes)
+var _ai_cache_built := false           # arena-scoped caches are built (even if empty / no arena yet)
+
+# Aggregate debug statistics (shared across all bots; snapshot via bot_ai_stats()).
+static var _ai_stats_window_start := 0     # Time.get_ticks_usec() at the current window's start
+static var _ai_stats_decisions := 0        # staggered decision-block executions in the window
+static var _ai_stats_target_searches := 0  # _nearest_enemy executions in the window
+static var _ai_stats_hazard_checks := 0    # hazard proximity evaluations in the window
+
 var team_ring_enabled := false
 var round_manager: Node = null
 var touch_controls: Node = null
@@ -104,15 +173,17 @@ var land_particles: CPUParticles3D = null
 @onready var camera_pivot: Node3D = $CameraPivot
 @onready var spring_arm: SpringArm3D = $CameraPivot/SpringArm3D
 @onready var camera: Camera3D = $CameraPivot/SpringArm3D/Camera3D
+@onready var audio_listener: AudioListener3D = $CameraPivot/SpringArm3D/Camera3D/AudioListener3D
 @onready var name_label: Label3D = $NameLabel
 var name_plate: Sprite3D
 
 
 ## Must be called BEFORE the node is added to the tree.
-func setup(id: int, pname: String, color_idx: int, bot: bool) -> void:
+func setup(id: int, pname: String, color_idx: int, bot: bool, detail_idx := -1) -> void:
 	peer_id = id
 	player_name = pname
 	color_index = color_idx
+	detail_color_index = detail_idx
 	is_bot = bot
 	name = "P%d" % id
 	# Bots are simulated by the host, so they belong to peer 1 (their id is only a label).
@@ -123,9 +194,10 @@ func _ready() -> void:
 	add_to_group("players")
 	is_local = (not is_bot) and is_multiplayer_authority()
 	var color := GameConstants.get_color(color_index)
-	visuals.build(color)
+	visuals.build(color, GameConstants.get_detail_color(detail_color_index))
 	visuals.set_local_character(is_local)
 	visuals.set_quality(_visual_quality())
+	visuals.set_hat(hat_id)
 	name_plate = Sprite3D.new()
 	name_plate.name = "NamePlate"
 	name_plate.texture = load("res://NewAssets/in_game/player_card_BG.png")
@@ -133,7 +205,7 @@ func _ready() -> void:
 	name_plate.billboard = 1
 	name_plate.no_depth_test = true
 	name_plate.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-	name_plate.position = Vector3(0.0, 2.35, 0.0)
+	name_plate.position = Vector3(0.0, 2.35 + AccessoriesLib.plate_lift(hat_id), 0.0)
 	add_child(name_plate)
 	remove_child(name_label)
 	name_plate.add_child(name_label)
@@ -147,11 +219,17 @@ func _ready() -> void:
 	name_label.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 	if team_ring_enabled:
 		visuals.set_team_ring(GameConstants.team_color(team))
+	# Stagger AI scans so all bots never evaluate on the same frame.
+	_ai_next_target_scan = randf_range(0.0, AI_TARGET_SCAN_INTERVAL)
+	_ai_next_hazard_check = randf_range(0.0, AI_HAZARD_CHECK_INTERVAL)
+	if is_local:
+		_build_local_marker()
 	if role == GameConstants.HS_ROLE_HIDER:
 		_set_name_tag_visible(false)
 	spring_arm.add_excluded_object(get_rid())
 	spring_arm.collision_mask = GameConstants.LAYER_WORLD
 	camera.current = false
+	audio_listener.current = is_local
 	floor_snap_length = 0.3
 	floor_max_angle = deg_to_rad(50.0)
 	_net_pos = global_position
@@ -159,11 +237,18 @@ func _ready() -> void:
 	if is_local:
 		camera.current = true
 		camera_pivot.top_level = true
+		_base_fov = camera.fov
+		_shake_noise = FastNoiseLite.new()
+		_shake_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+		_shake_noise.frequency = 1.0
+		_shake_noise.fractal_type = FastNoiseLite.FRACTAL_NONE
 		touch_controls = get_tree().get_first_node_in_group("touch_controls")
 		if touch_controls != null:
 			touch_controls.set_role_ui(role)
 		SettingsManager.settings_changed.connect(_on_setting_changed)
 		_apply_camera_settings()
+		if round_manager != null:
+			round_manager.knockout_scored.connect(_on_knockout_scored)
 	else:
 		camera_pivot.visible = false
 	# Landing particles are created on demand when effects are enabled.
@@ -197,6 +282,14 @@ func _can_act() -> bool:
 
 
 func _physics_process(delta: float) -> void:
+	# Rebuild magnet carrier list if ownership/powerup state changes
+	if _magnet_candidates_stale:
+		_magnet_carriers = []
+		if round_manager != null:
+			for p in round_manager.players.values():
+				if p.is_alive and int(p.get("_pu_type")) == MAGNET_PU and is_enemy(p):
+					_magnet_carriers.append(p)
+		_magnet_candidates_stale = false
 	if not is_alive:
 		return
 	hug_timer = maxf(0.0, hug_timer - delta)
@@ -231,6 +324,9 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	_track_grab_visual()
+	_tick_powerup(delta)
+	_tick_marker(delta)
+	_tick_aim()
 	if not is_local:
 		return
 	_update_camera(delta)
@@ -293,41 +389,94 @@ func _update_camera(delta: float) -> void:
 	var inv := -1.0 if bool(SettingsManager.get_setting("invert_camera_y")) else 1.0
 	cam_yaw -= camera_delta.x * sens
 	cam_pitch -= camera_delta.y * sens * inv
-	cam_pitch = clampf(cam_pitch, -1.15, 0.45)
+	cam_pitch = clampf(cam_pitch, -0.8 if _indoor_camera() else -1.15, 0.3 if _indoor_camera() else 0.45)
 	camera_delta = Vector2.ZERO
 	# Smooth follow (pivot is top-level so it can lag behind the body a little).
 	var target := global_position + Vector3(0, 1.4, 0)
 	camera_pivot.global_position = camera_pivot.global_position.lerp(target, 1.0 - exp(-14.0 * delta))
 	camera_pivot.rotation.y = cam_yaw
 	spring_arm.rotation.x = cam_pitch
-	if _shake > 0.0:
-		_shake = maxf(0.0, _shake - delta)
-		camera.h_offset = randf_range(-1.0, 1.0) * _shake * 0.35
-		camera.v_offset = randf_range(-1.0, 1.0) * _shake * 0.35
-	else:
+	_update_shake(delta)
+
+
+## Trauma-driven camera shake. Trauma decays linearly and the offset amplitude
+## is trauma squared, so weak hits stay subtle. The FastNoiseLite instance is
+## created once in _ready and sampled over time: no random calls, no per-frame
+## allocations. Disabled entirely by the "screen_shake" setting.
+func _update_shake(delta: float) -> void:
+	if _shake_noise == null or _trauma <= 0.0 or not bool(SettingsManager.get_setting("screen_shake")):
+		_trauma = 0.0
 		camera.h_offset = 0.0
 		camera.v_offset = 0.0
+		camera.rotation.z = 0.0
+		return
+	_trauma = maxf(0.0, _trauma - TRAUMA_DECAY * delta)
+	_trauma_time += delta
+	var amp := _trauma * _trauma
+	camera.h_offset = _shake_noise.get_noise_2d(_trauma_time * SHAKE_NOISE_SPEED, 0.0) * amp * TRAUMA_MAX_OFFSET
+	camera.v_offset = _shake_noise.get_noise_2d(0.0, _trauma_time * SHAKE_NOISE_SPEED) * amp * TRAUMA_MAX_OFFSET
+	camera.rotation.z = deg_to_rad(_shake_noise.get_noise_2d(_trauma_time * SHAKE_ROLL_SPEED, 137.0) * amp * TRAUMA_MAX_ROLL)
+
+
+## Adds camera trauma (0..1). Amplitude is trauma squared; ignored when the
+## screen shake setting is off or when this is not the local player's camera.
+func add_trauma(amount: float) -> void:
+	if not is_local or amount <= 0.0:
+		return
+	if not bool(SettingsManager.get_setting("screen_shake")):
+		return
+	_trauma = clampf(_trauma + amount, 0.0, 1.0)
+
+
+## Dash FOV kick: 70 -> 78 over 0.08 s, back over 0.3 s. One tween object is
+## kept and the previous run is killed before a new kick starts.
+func _fov_kick() -> void:
+	if not bool(SettingsManager.get_setting("screen_shake")):
+		return
+	if _fov_tween != null and _fov_tween.is_valid():
+		_fov_tween.kill()
+	_fov_tween = create_tween()
+	_fov_tween.tween_property(camera, "fov", _base_fov + FOV_KICK_DEGREES, FOV_KICK_IN)
+	_fov_tween.tween_property(camera, "fov", _base_fov, FOV_KICK_OUT)
+
+
+## True in hide-and-seek (sealed apartments): shorter, flatter camera.
+func _indoor_camera() -> bool:
+	return int(GameManager.get_match_config().get("mode", 0)) == GameConstants.MODE_HIDE
 
 
 func _apply_camera_settings() -> void:
-	spring_arm.spring_length = clampf(float(SettingsManager.get_setting("camera_distance")), 3.0, 12.0)
+	var dist := clampf(float(SettingsManager.get_setting("camera_distance")), 3.0, 12.0)
+	if _indoor_camera():
+		dist = minf(dist, 4.6)      # inside a sealed apartment the camera stays close: no ceiling / wall clipping
+	spring_arm.spring_length = dist
 
 
 func _visual_quality() -> int:
 	match int(SettingsManager.get_setting("graphics_preset")):
 		SettingsManager.PRESET_LOW:
 			return 0
+		SettingsManager.PRESET_POTATO:
+			return 0    # same character detail teardown as LOW
 		SettingsManager.PRESET_HIGH:
 			return 2
 		_:
 			return 1
 
 
-func _on_setting_changed(key: String, _value: Variant) -> void:
+func _on_setting_changed(key: String, value: Variant) -> void:
 	if key == "camera_distance":
 		_apply_camera_settings()
 	elif key == "graphics_preset":
 		visuals.set_quality(_visual_quality())
+	elif key == "screen_shake" and not bool(value):
+		_trauma = 0.0
+		camera.h_offset = 0.0
+		camera.v_offset = 0.0
+		camera.rotation.z = 0.0
+		if _fov_tween != null and _fov_tween.is_valid():
+			_fov_tween.kill()
+		camera.fov = _base_fov
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +520,15 @@ func _simulate(delta: float) -> void:
 		wish = right * move_input.x + forward * (-move_input.y)
 	var mag := minf(wish.length(), 1.0)
 	var speed_scale := 1.3 if arena_event == 2 else 1.0
+	if _pu_type == 0 and _pu_time > 0.0:
+		speed_scale *= 1.35
 	var acceleration_scale := 0.38 if arena_event == 3 else 1.0
 	var deceleration_scale := 0.24 if arena_event == 3 else 1.0
+	# Floor zones: values are accumulated into member vars by _query_zones (no dict allocation).
+	_query_zones(on_floor)
+	if _zone_ice:
+		acceleration_scale *= 0.16          # ice: slow to start and very slow to stop
+		deceleration_scale *= 0.05
 	var control := 1.0 if _stun <= 0.0 else 0.25
 	var target := Vector3.ZERO
 	if mag > 0.01:
@@ -406,6 +562,8 @@ func _simulate(delta: float) -> void:
 	# Gravity
 	var gravity_scale := 0.58 if arena_event == 1 else 1.0
 	var jump_scale := 1.18 if arena_event == 1 else 1.0
+	if _pu_type == 1 and _pu_time > 0.0:
+		jump_scale *= 1.45
 	if not on_floor:
 		velocity.y = maxf(velocity.y - gravity * gravity_scale * delta * (0.25 if _dash_timer > 0.0 else 1.0), -max_fall_speed)
 
@@ -440,12 +598,15 @@ func _simulate(delta: float) -> void:
 
 	# Knockback decays faster on the ground
 	var decay := 7.0 if on_floor else 2.2
+	if _zone_ice:
+		decay = 1.4                              # knockback keeps sliding on ice
 	_knockback = _knockback.lerp(Vector3.ZERO, 1.0 - exp(-decay * delta))
 	if _knockback.length() < 0.05:
 		_knockback = Vector3.ZERO
 
-	velocity.x = _move_vel.x * pull_control + _knockback.x
-	velocity.z = _move_vel.z * pull_control + _knockback.z
+	var zone_push: Vector3 = _zone_belt + _zone_wind
+	velocity.x = _move_vel.x * pull_control + _knockback.x + zone_push.x
+	velocity.z = _move_vel.z * pull_control + _knockback.z + zone_push.z
 	var landing_speed := maxf(-velocity.y, 0.0)
 	move_and_slide()
 
@@ -571,6 +732,8 @@ func _apply_trampoline_bounce(landing_speed: float) -> void:
 func _on_landed(landing_speed := 0.0) -> void:
 	# Animation removed: movement-core only.
 	AudioManager.play_character("land", 0.08, -4.0 if is_local else -14.0)
+	if is_local and landing_speed >= TRAUMA_LAND_SPEED:
+		add_trauma(0.15)
 	if bool(SettingsManager.get_setting("effects")):
 		if land_particles == null:
 			_setup_particles()
@@ -608,6 +771,7 @@ func _try_dash(wish: Vector3) -> void:
 		land_particles.restart()
 	if is_local:
 		GameManager.vibrate(30)
+		_fov_kick()
 	if grabbed_by != 0:
 		_report_escape()
 
@@ -762,7 +926,7 @@ func _find_arm_target(rng: float, aim_yaw := NAN) -> Node:
 	var yaw := facing_yaw if is_nan(aim_yaw) else aim_yaw
 	var facing := Vector3(-sin(yaw), 0.0, -cos(yaw))
 	var reach := rng + GameConstants.ARM_LENIENCE   # same lenience the host applies
-	for p in get_tree().get_nodes_in_group("players"):
+	for p in (round_manager.players.values() if round_manager != null else get_tree().get_nodes_in_group("players")):
 		if p == self or not p.is_alive or not is_enemy(p):
 			continue
 		var to: Vector3 = p.global_position - global_position
@@ -915,6 +1079,14 @@ func become_puddle() -> void:
 func apply_knockback(impulse: Vector3, max_horizontal := 22.0, max_upward := 8.0) -> void:
 	if not is_alive:
 		return
+	if _pu_type == SHIELD_PU and _pu_time > 0.0 and impulse.length() > 3.0:
+		# Bubble shield: absorbs exactly one hit.
+		clear_powerup()
+		if round_manager != null and round_manager.get("powerups") != null:
+			round_manager.powerups.shield_used(peer_id)
+		if bool(SettingsManager.get_setting("effects")):
+			_spawn_burst(global_position + Vector3(0, 1.0, 0), Color(0.4, 0.9, 1.0, 0.95), 24, 7.0)
+		return
 	_knockback += Vector3(impulse.x, 0.0, impulse.z)
 	var h := Vector2(_knockback.x, _knockback.z)
 	if h.length() > max_horizontal:
@@ -922,14 +1094,253 @@ func apply_knockback(impulse: Vector3, max_horizontal := 22.0, max_upward := 8.0
 		_knockback = Vector3(h.x, 0.0, h.y)
 	velocity.y = maxf(velocity.y, 0.0) + clampf(impulse.y, 0.0, max_upward)
 	_stun = 0.4
-	visuals.play_hit(impulse, clampf(Vector3(impulse.x, 0.0, impulse.z).length() / 22.0 + maxf(impulse.y, 0.0) / 30.0, 0.3, 1.5))
+	var impact := Vector3(impulse.x, 0.0, impulse.z).length() / 22.0 + maxf(impulse.y, 0.0) / 30.0
+	visuals.play_hit(impulse, clampf(impact, 0.3, 1.5))
 	var spin_axis := Vector3.UP.cross(Vector3(impulse.x, 0.0, impulse.z)).normalized()
 	if spin_axis.length_squared() > 0.0001:
 		# Animation removed: movement-core only.
 		pass
 	if is_local:
-		_shake = 0.3
+		add_trauma(lerpf(0.35, 0.6, clampf(impact, 0.0, 1.0)))
 		GameManager.vibrate(50)
+		if bool(SettingsManager.get_setting("hitstop")) and Vector2(impulse.x, impulse.z).length() >= 12.0:
+			_hit_stop(0.07)
+	if bool(SettingsManager.get_setting("effects")) and impulse.length() > 3.0:
+		_spawn_burst(global_position + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.35, 0.95), 5 if _visual_quality() == 0 else 12, 4.5)
+
+
+## Conveyor belts, ice patches and fans under / around this player (see obstacles/floor_zone.gd).
+## Called every physics tick; updates persistent member variables instead of allocating a new dictionary.
+func _query_zones(on_floor: bool) -> void:
+	# Reset zone accumulators for this frame.
+	_zone_ice = false
+	_zone_belt = Vector3.ZERO
+	_zone_wind = Vector3.ZERO
+	if grabbed_by != 0 or _dash_timer > 0.0:
+		return
+	# Resolve floor zone references once per map change; iterate cached list instead of scanning the SceneTree.
+	_resolve_floor_zones(on_floor)
+	# Add magnet pull to wind component (magnet runs on carrier's peer only).
+	_zone_wind += _magnet_pull()
+
+
+## Builds/refreshes cached floor zone references when the map changes, then queries each zone.
+func _resolve_floor_zones(on_floor: bool) -> void:
+	var arena: Node3D = round_manager.arena if round_manager != null else null
+	if arena != null and not is_instance_valid(arena):
+		arena = null
+	if _zone_last_scene != null and not is_instance_valid(_zone_last_scene):
+		# Previous arena was freed (map change): drop the stale node reference.
+		_zone_last_scene = null
+		_zone_rebuild_stale = true
+	if _zone_rebuild_stale or arena != _zone_last_scene:
+		_zone_last_scene = arena
+		_floor_zone_refs.clear()
+		if arena != null:
+			# Find floor zones anywhere under this arena (they are parented to tier nodes, not the root).
+			_collect_zone_refs(arena)
+		else:
+			# Fallback: global group scan (first frame or no round_manager yet).
+			for z in get_tree().get_nodes_in_group("floor_zones"):
+				if is_instance_valid(z):
+					_floor_zone_refs.append(z)
+		_zone_rebuild_stale = false
+	# Iterate cached references and accumulate zone influence.
+	for z in _floor_zone_refs:
+		if not is_instance_valid(z):
+			continue
+		z.influence_at(global_position, on_floor, _zone_scratch)
+		if bool(_zone_scratch["ice"]):
+			_zone_ice = true
+		_zone_belt += _zone_scratch["belt"] as Vector3
+		_zone_wind += _zone_scratch["wind"] as Vector3
+
+
+## Recursively collects floor zone nodes under `node` (zones are nested inside arena tier nodes).
+func _collect_zone_refs(node: Node) -> void:
+	for child in node.get_children():
+		if child is Node3D and child.has_method("influence_at"):
+			_floor_zone_refs.append(child)
+		_collect_zone_refs(child)
+
+
+## Rivals holding the MAGNET power-up draw this player toward them (runs on the owner's peer, so no extra network traffic).
+func _magnet_pull() -> Vector3:
+	var pull := Vector3.ZERO
+	# Use cached magnet carrier list instead of scanning all players every tick.
+	# is_instance_valid / is_alive / _pu_time guards cover lifecycle changes
+	# between cache rebuilds (e.g. a carrier being eliminated mid-round).
+	for p in _magnet_carriers:
+		if not is_instance_valid(p) or not p.is_alive:
+			continue
+		if int(p.get("_pu_type")) != MAGNET_PU or float(p.get("_pu_time")) <= 0.0:
+			continue
+		var to: Vector3 = p.global_position - global_position
+		to.y = 0.0
+		var d2 := to.length_squared()
+		if d2 > MAGNET_RANGE * MAGNET_RANGE or d2 < 1.4 * 1.4:
+			continue
+		var d := sqrt(d2)
+		pull += to / d * MAGNET_PULL * (1.0 - d / MAGNET_RANGE)
+	return pull
+
+
+## Punch aim line: while the attack button is charging, a line on the floor shows where the punch goes and how far it
+## reaches (it grows with the charge). It turns red and snaps onto an enemy that would be hit.
+func _tick_aim() -> void:
+	if not is_local:
+		return
+	var f := 0.0
+	var want := bool(SettingsManager.get_setting("aim_line")) and is_alive and grabbed_by == 0 and not _celebrating
+	if want and round_manager != null and int(round_manager.mode) == GameConstants.MODE_HIDE:
+		want = false
+	if want:
+		f = clampf(_key_charge_t / GameConstants.CHARGE_TIME, 0.0, 1.0)
+		if touch_controls != null and is_instance_valid(touch_controls):
+			f = maxf(f, float(touch_controls.get_charge_fraction()))
+		want = f > 0.04
+	if not want:
+		if _aim_root != null:
+			_aim_root.visible = false
+		return
+	if _aim_root == null:
+		_build_aim()
+	var rng := GameConstants.arm_range(arm_mode, f)
+	var yaw := facing_yaw
+	var length := rng
+	var locked := false
+	var target := _find_arm_target(rng, yaw)
+	if target != null:
+		var flat: Vector3 = target.global_position - global_position
+		flat.y = 0.0
+		if flat.length() > 0.01:
+			yaw = atan2(-flat.x, -flat.z)
+			length = clampf(GameConstants.combat_ground_distance(self, target), 0.8, rng)
+			locked = true
+	var col := Color(1.0, 0.25, 0.2) if locked else Color(1.0, 1.0, 1.0).lerp(Color(1.0, 0.7, 0.1), f)
+	_aim_mat.albedo_color = Color(col.r, col.g, col.b, 0.75 if locked else 0.55)
+	var bar := maxf(length - 0.45, 0.1)
+	_aim_bar.scale = Vector3(1.0, 1.0, bar)
+	_aim_bar.position = Vector3(0.0, 0.0, -(0.45 + bar * 0.5))
+	_aim_dot.position = Vector3(0.0, 0.0, -length)
+	_aim_root.visible = true
+	_aim_root.global_position = Vector3(global_position.x, global_position.y + 0.07, global_position.z)
+	_aim_root.global_rotation = Vector3(0.0, yaw, 0.0)
+
+
+func _build_aim() -> void:
+	_aim_root = Node3D.new()
+	_aim_root.name = "AimLine"
+	_aim_root.top_level = true            # keeps its own rotation: the body's facing and the visuals' animation do not tilt it
+	add_child(_aim_root)
+	_aim_mat = Scenery.dup_material(Scenery.mat(Color(1, 1, 1), 0.5, true, 0.55)) as StandardMaterial3D
+	_aim_bar = MeshInstance3D.new()
+	_aim_bar.mesh = Scenery.box(Vector3(0.16, 0.02, 1.0))
+	_aim_bar.material_override = _aim_mat
+	_aim_bar.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_aim_root.add_child(_aim_bar)
+	_aim_dot = MeshInstance3D.new()
+	_aim_dot.mesh = Scenery.cylinder(0.3, 0.3, 0.02, 16)
+	_aim_dot.material_override = _aim_mat
+	_aim_dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_aim_root.add_child(_aim_dot)
+
+
+## Hit-stop: offline the local game freezes for a moment on a strong hit
+## (real-time timer, so it always ends). Online the simulation must keep
+## running — movement is client-authoritative and replicated every 0.05 s — so
+## the freeze is purely visual: the victim's and the local player's animators
+## pause and the camera gets a stronger kick instead.
+func _hit_stop(real_seconds: float) -> void:
+	if not NetworkManager.online:
+		if Engine.time_scale < 0.99:
+			return
+		Engine.time_scale = 0.06
+		get_tree().create_timer(real_seconds, true, false, true).timeout.connect(func() -> void: Engine.time_scale = 1.0)
+		return
+	_freeze_impact_visuals(real_seconds)
+	if _trauma < 0.65:
+		add_trauma(0.65 - _trauma)
+
+
+## Local-only, purely visual online hit-stop: pause the victim's and the local
+## player's ContenderAnimator for a short real-time window.
+func _freeze_impact_visuals(real_seconds: float) -> void:
+	_freeze_animator(visuals, real_seconds)
+	if round_manager != null:
+		var lp: Node = round_manager.get("local_player") as Node
+		if lp != null and lp != self:
+			_freeze_animator(lp.get("visuals") as Node, real_seconds)
+
+
+func _freeze_animator(v: Node, real_seconds: float) -> void:
+	if v != null and is_instance_valid(v) and v.has_method("freeze_animation"):
+		v.freeze_animation(real_seconds)
+
+
+## A knockout near the local player adds a small camera kick. The victim's own
+## client already got the hit trauma from apply_knockback().
+func _on_knockout_scored(_killer_id: int, victim_id: int, _killer_name: String, _victim_name: String) -> void:
+	if victim_id == peer_id or round_manager == null:
+		return
+	var victim: Node3D = round_manager.players.get(victim_id) as Node3D
+	if victim == null or not is_instance_valid(victim):
+		return
+	if global_position.distance_squared_to(victim.global_position) <= TRAUMA_KO_RANGE * TRAUMA_KO_RANGE:
+		add_trauma(0.25)
+
+
+## Returns true when shader-powered visual effects should be used (effects
+## setting on and graphics preset not LOW). Falls back to cheap materials on
+## weak devices so the burst never allocates a shader when it cannot show it.
+func _effects_allowed() -> bool:
+	if SettingsManager == null:
+		return false
+	if not bool(SettingsManager.get_setting("effects")):
+		return false
+	var preset := int(SettingsManager.get_setting("graphics_preset"))
+	return preset != SettingsManager.PRESET_LOW and preset != SettingsManager.PRESET_POTATO
+
+
+## Returns the cached burst glow ShaderMaterial, creating it once on first use.
+## The burst tint comes from the CPUParticles3D color (read as COLOR by the
+## burst_glow shader), so the shader's glow_color can stay a fixed white.
+func _get_burst_material() -> ShaderMaterial:
+	if _burst_shader_cache == null:
+		_burst_shader_cache = _burst_material(Color(1, 1, 1))
+	return _burst_shader_cache
+
+
+## One-shot spark / dust burst that stays in the world (not parented to the moving player); frees itself.
+func _spawn_burst(pos: Vector3, color: Color, amount: int, speed: float) -> void:
+	var host := get_parent()
+	if host == null or not host.is_inside_tree():
+		return
+	var p := CPUParticles3D.new()
+	p.one_shot = true
+	p.emitting = false
+	p.amount = amount * 2
+	p.lifetime = 0.6
+	p.explosiveness = 1.0
+	p.mesh = _puff_mesh()
+	p.direction = Vector3.UP
+	p.spread = 180.0
+	p.initial_velocity_min = speed * 0.6
+	p.initial_velocity_max = speed * 1.4
+	p.gravity = Vector3(0, -9.0, 0)
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 1.1
+	# CPUParticles3D color is exposed as COLOR in the burst_glow shader, so the
+	# burst tint comes through here (albedo = glow_color * COLOR.rgb).
+	p.color = color
+	if _effects_allowed() and p.mesh != null:
+		# Cached shader material: allocated once per session, never per burst/frame.
+		# Without effects (or on LOW), the mesh keeps its cheap vertex-colour material.
+		p.material_override = _get_burst_material()
+	host.add_child(p)
+	p.global_position = pos
+	p.restart()
+	get_tree().create_timer(1.1).timeout.connect(p.queue_free)
 
 
 # ---------------------------------------------------------------------------
@@ -962,6 +1373,7 @@ func respawn(pos: Vector3) -> void:
 	grabbing_id = 0
 	grab_phase = 0
 	hug_timer = 0.0
+	clear_powerup()
 	visuals.reset_visual_state()
 	_fall_reported = false
 	is_alive = true
@@ -1033,25 +1445,99 @@ func _interpolate_remote(delta: float) -> void:
 # ---------------------------------------------------------------------------
 # Practice bots (simulated on the host)
 
+## Debug statistics for bot AI. Snapshot & reset the rolling window (rates are per-second).
+## active_bots is the number of live bots in the match, passed by the caller (e.g. bench / debug HUD);
+## pass -1 to report it as unknown.
+static func bot_ai_stats(active_bots: int = -1) -> Dictionary:
+	var now := Time.get_ticks_usec()
+	if _ai_stats_window_start == 0:
+		_ai_stats_window_start = now
+	var elapsed := maxf(float(now - _ai_stats_window_start) / 1000000.0, 0.001)
+	var snap := {
+		"active_bots": active_bots,
+		"window_seconds": elapsed,
+		"decisions": _ai_stats_decisions,
+		"decisions_per_sec": float(_ai_stats_decisions) / elapsed,
+		"target_searches": _ai_stats_target_searches,
+		"target_searches_per_sec": float(_ai_stats_target_searches) / elapsed,
+		"hazard_checks": _ai_stats_hazard_checks,
+		"hazard_checks_per_sec": float(_ai_stats_hazard_checks) / elapsed,
+	}
+	_ai_stats_window_start = now
+	_ai_stats_decisions = 0
+	_ai_stats_target_searches = 0
+	_ai_stats_hazard_checks = 0
+	return snap
+
+
+## Refresh arena-scoped AI caches (map_info + hazard refs) when the arena changes.
+## Rebuilt once per map, not per tick.
+func _ai_ensure_arena_caches() -> void:
+	var arena: Node3D = null
+	if round_manager != null and round_manager.arena != null and is_instance_valid(round_manager.arena):
+		arena = round_manager.arena
+	if arena == _ai_arena and _ai_cache_built:
+		return
+	_ai_arena = arena
+	_ai_cache_built = true
+	_ai_map_info = {}
+	_ai_hazards.clear()
+	if arena != null:
+		var mi: Variant = arena.get("map_info")
+		if mi is Dictionary:
+			_ai_map_info = mi
+		_collect_hazard_refs(arena)
+	else:
+		# No arena yet (e.g. still streaming in): one global group scan, then cached.
+		for h in get_tree().get_nodes_in_group("hazards"):
+			if is_instance_valid(h) and h is Node3D:
+				_ai_hazards.append(h)
+
+
+## Recursively collects hazard markers under `node` (they are parented to rotating pivots, not the arena root).
+func _collect_hazard_refs(node: Node) -> void:
+	for child in node.get_children():
+		if child is Node3D and child.is_in_group("hazards"):
+			_ai_hazards.append(child)
+		_collect_hazard_refs(child)
+
+
+## O(1) sanity check on the cached target: gone? dead? no longer an enemy?
+func _ai_target_valid() -> bool:
+	var t := _ai_target
+	return t != null and is_instance_valid(t) and t.is_alive and is_enemy(t)
+
+
 func _bot_think(delta: float) -> void:
 	_bot_timer -= delta
 	_bot_jump_timer -= delta
-	var info: Dictionary = {}
-	if round_manager != null and round_manager.arena != null:
-		info = round_manager.arena.map_info
+	_ai_ensure_arena_caches()
+	var info: Dictionary = _ai_map_info
 	var r_max := float(info.get("bot_radius", 11.0))
 	var r_min := float(info.get("bot_min_radius", 0.0))
-	var nearest := _nearest_enemy()
+	# Nearest enemy: refreshed on a staggered cadence (~0.2 s), or IMMEDIATELY if the cached one died or left.
+	_ai_next_target_scan -= delta
+	if _ai_next_target_scan <= 0.0:
+		_ai_next_target_scan = AI_TARGET_SCAN_INTERVAL
+		_ai_target = _nearest_enemy()
+		_ai_stats_decisions += 1
+	elif not _ai_target_valid():
+		_ai_target = _nearest_enemy()
+		_ai_next_target_scan = AI_TARGET_SCAN_INTERVAL
+	var nearest := _ai_target
 	if _bot_timer <= 0.0:
 		_bot_timer = randf_range(1.2, 2.6)
-		if nearest != null and randf() < 0.5 and nearest.global_position.distance_to(global_position) < 10.0:
+		if nearest != null and randf() < 0.5 \
+				and nearest.global_position.distance_squared_to(global_position) < 100.0:
 			_bot_target = nearest.global_position
 		else:
 			var a := randf() * TAU
 			var r := randf_range(maxf(r_min + 0.8, 1.5), maxf(r_max * 0.8, r_min + 1.6))
 			_bot_target = Vector3(cos(a) * r, 0.0, sin(a) * r)
-	if nearest != null and _bot_target.distance_to(nearest.global_position) < 3.0:
-		_bot_target = nearest.global_position
+	if nearest != null:
+		var td: Vector3 = _bot_target - nearest.global_position
+		if td.length_squared() < 9.0:                      # < 3.0 m from the enemy: re-aim at them
+			_bot_target = nearest.global_position
 	var to := _bot_target - global_position
 	to.y = 0.0
 	bot_world_dir = Vector3.ZERO if to.length() < 0.6 else to.normalized() * 0.85
@@ -1063,12 +1549,18 @@ func _bot_think(delta: float) -> void:
 	elif r_min > 0.0 and flat.length() < r_min and flat.length() > 0.01:
 		bot_world_dir = flat.normalized()
 		_bot_target = flat.normalized() * (r_min + r_max) * 0.5
-	# Jump over nearby hazards and occasionally for fun
+	# Jump over nearby hazards and occasionally for fun (checked on a staggered lower-frequency cadence)
 	if is_on_floor():
-		for h in get_tree().get_nodes_in_group("hazards"):
-			if h.global_position.distance_to(global_position) < 2.4:
-				jump_requested = true
-				break
+		_ai_next_hazard_check -= delta
+		if _ai_next_hazard_check <= 0.0:
+			_ai_next_hazard_check = AI_HAZARD_CHECK_INTERVAL
+			_ai_stats_hazard_checks += 1
+			for h in _ai_hazards:
+				if h == null or not is_instance_valid(h):
+					continue
+				if h.global_position.distance_squared_to(global_position) < 5.76:   # < 2.4 m
+					jump_requested = true
+					break
 	if _bot_jump_timer <= 0.0:
 		_bot_jump_timer = randf_range(2.5, 6.0)
 		jump_requested = true
@@ -1094,7 +1586,8 @@ func _bot_think_hs(delta: float) -> void:
 	bot_world_dir = Vector3.ZERO
 	if round_manager == null or round_manager.arena == null or not is_on_floor():
 		return
-	var info: Dictionary = round_manager.arena.map_info
+	_ai_ensure_arena_caches()
+	var info: Dictionary = _ai_map_info
 	if not info.has("rooms"):
 		return
 	var rooms: Array = info["rooms"]
@@ -1125,16 +1618,31 @@ func _bot_think_hs(delta: float) -> void:
 		_bot_scan_t -= delta
 		if _bot_scan_t <= 0.0:
 			_bot_scan_t = 0.7
-			for p in get_tree().get_nodes_in_group("players"):
-				if p == self or not p.is_alive or p.role != GameConstants.HS_ROLE_HIDER:
-					continue
-				var dd: float = p.global_position.distance_to(global_position)
-				if dd < GameConstants.HS_CATCH_RANGE - 0.4 and _push_timer <= 0.0 and randf() < 0.45:
-					var dv: Vector3 = p.global_position - global_position
-					facing_yaw = atan2(-dv.x, -dv.z)
-					visuals.rotation.y = facing_yaw
-					push_requested = true
-					break
+			_ai_stats_target_searches += 1
+			var catch_d2 := (GameConstants.HS_CATCH_RANGE - 0.4) * (GameConstants.HS_CATCH_RANGE - 0.4)
+			if round_manager != null:
+				for id in round_manager.players:
+					var p: Node = round_manager.players[id]
+					if p == self or not is_instance_valid(p) or not p.is_alive or p.role != GameConstants.HS_ROLE_HIDER:
+						continue
+					var dd2: float = p.global_position.distance_squared_to(global_position)
+					if dd2 < catch_d2 and _push_timer <= 0.0 and randf() < 0.45:
+						var dv: Vector3 = p.global_position - global_position
+						facing_yaw = atan2(-dv.x, -dv.z)
+						visuals.rotation.y = facing_yaw
+						push_requested = true
+						break
+			else:
+				for p in get_tree().get_nodes_in_group("players"):
+					if p == self or not p.is_alive or p.role != GameConstants.HS_ROLE_HIDER:
+						continue
+					var dd2: float = p.global_position.distance_squared_to(global_position)
+					if dd2 < catch_d2 and _push_timer <= 0.0 and randf() < 0.45:
+						var dv: Vector3 = p.global_position - global_position
+						facing_yaw = atan2(-dv.x, -dv.z)
+						visuals.rotation.y = facing_yaw
+						push_requested = true
+						break
 	# Follow the waypoints
 	if _bot_path_i < _bot_path.size():
 		var wp: Vector3 = _bot_path[_bot_path_i]
@@ -1156,14 +1664,26 @@ func _bot_think_hs(delta: float) -> void:
 
 
 func _nearest_enemy() -> Node:
+	_ai_stats_target_searches += 1
 	var best: Node = null
-	var best_d := INF
+	var best_d2 := INF
+	if round_manager != null:
+		# Direct dictionary iteration: no temporary Array allocation, no SceneTree scan.
+		for id in round_manager.players:
+			var p: Node = round_manager.players[id]
+			if p == self or not is_instance_valid(p) or not p.is_alive or not is_enemy(p):
+				continue
+			var d2: float = p.global_position.distance_squared_to(global_position)
+			if d2 < best_d2:
+				best_d2 = d2
+				best = p
+		return best
 	for p in get_tree().get_nodes_in_group("players"):
 		if p == self or not p.is_alive or not is_enemy(p):
 			continue
-		var d: float = p.global_position.distance_to(global_position)
-		if d < best_d:
-			best_d = d
+		var d2: float = p.global_position.distance_squared_to(global_position)
+		if d2 < best_d2:
+			best_d2 = d2
 			best = p
 	return best
 
@@ -1179,7 +1699,8 @@ func _setup_particles() -> void:
 	land_particles = CPUParticles3D.new()
 	land_particles.emitting = false
 	land_particles.one_shot = true
-	land_particles.amount = 4 if int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_LOW else 10
+	var preset := int(SettingsManager.get_setting("graphics_preset"))
+	land_particles.amount = 2 if preset == SettingsManager.PRESET_POTATO else (4 if preset == SettingsManager.PRESET_LOW else 10)
 	land_particles.lifetime = 0.45
 	land_particles.explosiveness = 1.0
 	land_particles.mesh = _puff_mesh()
@@ -1197,16 +1718,173 @@ func _setup_particles() -> void:
 	add_child(land_particles)
 
 
+## "Where am I?" helper, drawn only on the local player's screen: a white ring with a dark outline on the
+## floor (readable on any tile colour, even one that matches the player's colour) and a bobbing arrow.
+func _build_local_marker() -> void:
+	var ring := MeshInstance3D.new()
+	ring.name = "LocalRing"
+	ring.mesh = Scenery.torus(0.74, 0.86, 28, 6)
+	ring.material_override = Scenery.mat(Color(1, 1, 1), 0.5, true, 0.9)
+	ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	ring.position = Vector3(0, 0.05, 0)
+	add_child(ring)
+	var outline := MeshInstance3D.new()
+	outline.name = "LocalRingOutline"
+	outline.mesh = Scenery.torus(0.86, 0.95, 28, 6)
+	outline.material_override = Scenery.mat(Color(0.05, 0.05, 0.1), 0.5, true, 0.85)
+	outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	outline.position = Vector3(0, 0.045, 0)
+	add_child(outline)
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 0.2
+	cone.height = 0.4
+	cone.radial_segments = 8
+	cone.rings = 1
+	_marker_arrow = MeshInstance3D.new()
+	_marker_arrow.name = "LocalArrow"
+	_marker_arrow.mesh = cone
+	_marker_arrow.material_override = Scenery.mat(Color(1.0, 0.9, 0.2), 0.4, true)
+	_marker_arrow.rotation.x = PI                 # tip points down at the player
+	_marker_arrow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_marker_arrow.position = Vector3(0, 3.0, 0)
+	add_child(_marker_arrow)
+
+
+func _tick_marker(delta: float) -> void:
+	if _marker_arrow == null or not is_instance_valid(_marker_arrow):
+		return
+	_marker_t += delta
+	_marker_arrow.position.y = 3.0 + sin(_marker_t * 4.0) * 0.1
+	_marker_arrow.visible = is_alive
+
+
+## Power-up from the floor (runs on every peer: the aura is visual; the effect is read by the owner's movement code).
+func _shield_material(color: Color) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = SHIELD_SHADER
+	mat.set_shader_parameter("glow_color", Color(color.r, color.g, color.b, 0.55))
+	mat.set_shader_parameter("pulse_speed", 5.0)
+	mat.set_shader_parameter("pulse_amount", 0.35)
+	mat.set_shader_parameter("rim_power", 5.0)
+	mat.set_shader_parameter("emission_strength", 4.0)
+	return mat
+
+
+func _magnet_material(color: Color) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = MAGNET_SHADER
+	mat.set_shader_parameter("glow_color", Color(color.r, color.g, color.b, 0.55))
+	mat.set_shader_parameter("swirl_speed", 3.0)
+	mat.set_shader_parameter("pulse_speed", 4.0)
+	mat.set_shader_parameter("emission_strength", 4.0)
+	return mat
+
+
+func _burst_material(color: Color) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = BURST_SHADER
+	mat.set_shader_parameter("glow_color", Color(color.r, color.g, color.b, 0.95))
+	mat.set_shader_parameter("emission_strength", 6.0)
+	mat.set_shader_parameter("pulse_speed", 8.0)
+	return mat
+
+
+## Power-up from the floor (runs on every peer: the aura is visual; the effect is read by the owner's movement code).
+func apply_powerup(type: int, duration: float) -> void:
+	_pu_type = type
+	_pu_time = duration
+	if type == MAGNET_PU:
+		# Magnet state changed: mark every player's carrier list dirty so each
+		# authority rebuilds its own cache next tick.
+		if round_manager != null:
+			for p in round_manager.players.values():
+				p._magnet_candidates_stale = true
+	if _pu_aura == null or not is_instance_valid(_pu_aura):
+		var aura_quality: int = int(SettingsManager.get_setting("graphics_preset"))
+		var cheap_aura := SettingsManager == null or aura_quality == SettingsManager.PRESET_POTATO
+		_pu_aura = MeshInstance3D.new()
+		_pu_aura.mesh = Scenery.sphere(1.15, 8 if cheap_aura else 14, 5 if cheap_aura else 8)
+		_pu_aura.position = Vector3(0, 1.0, 0)
+		_pu_aura.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_pu_aura)
+	var cols: Array[Color] = [Color(1.0, 0.85, 0.12), Color(0.35, 0.95, 0.4), Color(0.3, 0.85, 1.0), Color(1.0, 0.45, 0.15), Color(0.9, 0.25, 0.9)]
+	var col := cols[clampi(type, 0, 4)]
+	_pu_aura.visible = true
+	var cheap_aura := SettingsManager != null and int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_POTATO
+	if type == SHIELD_PU and not cheap_aura:
+		_pu_aura.material_override = _shield_material(col)
+	else:
+		# POTATO: every aura (shield included) keeps the cheap translucent look
+		# instead of the animated emission / swirl shaders.
+		_pu_aura.material_override = Scenery.mat(col, 0.3, true, 0.3)
+	if _pu_field != null and is_instance_valid(_pu_field):
+		_pu_field.queue_free()
+		_pu_field = null
+	if type == MAGNET_PU:
+		_pu_field = MeshInstance3D.new()
+		_pu_field.mesh = Scenery.torus(MAGNET_RANGE - 0.12, MAGNET_RANGE, 40, 4)
+		_pu_field.material_override = Scenery.mat(col, 0.16, true, 0.3) if cheap_aura else _magnet_material(col)
+		_pu_field.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_pu_field.position = Vector3(0, 0.06, 0)
+		add_child(_pu_field)
+	if is_local:
+		GameManager.vibrate(30)
+
+
+func clear_powerup() -> void:
+	if _pu_field != null and is_instance_valid(_pu_field):
+		_pu_field.queue_free()
+	_pu_field = null
+	_pu_type = -1
+	_pu_time = 0.0
+	if _pu_aura != null and is_instance_valid(_pu_aura):
+		_pu_aura.queue_free()
+	_pu_aura = null
+	if round_manager != null:
+		for p in round_manager.players.values():
+			p._magnet_candidates_stale = true
+
+
+func _tick_powerup(delta: float) -> void:
+	if _pu_time <= 0.0:
+		return
+	_pu_time -= delta
+	if _pu_time <= 0.0 or not is_alive:
+		clear_powerup()
+	else:
+		# Intensify shield pulse and magnet swirl as the power-up nears expiry.
+		var urgency = clamp((2.0 - _pu_time) / 2.0, 0.0, 1.0)
+		if _pu_type == SHIELD_PU and _pu_aura != null and is_instance_valid(_pu_aura):
+			var mat := _pu_aura.material_override
+			if mat is ShaderMaterial:
+				mat.set_shader_parameter("pulse_amount", 0.35 + urgency * 0.25)
+				mat.set_shader_parameter("emission_strength", 4.0 + urgency * 3.0)
+		elif _pu_type == MAGNET_PU and _pu_field != null and is_instance_valid(_pu_field):
+			var mat := _pu_field.material_override
+			if mat is ShaderMaterial:
+				mat.set_shader_parameter("swirl_speed", 3.0 + urgency * 2.0)
+				mat.set_shader_parameter("emission_strength", 4.0 + urgency * 3.0)
+		# Blink the aura in the last two seconds, whatever the power-up is.
+		if _pu_time < 2.0 and _pu_aura != null and is_instance_valid(_pu_aura):
+			_pu_aura.visible = int(_pu_time * 6.0) % 2 == 0
+
+
+static var _puff_mesh_cache: Mesh = null
+
 func _puff_mesh() -> Mesh:
-	var s := SphereMesh.new()
-	s.radius = 0.12
-	s.height = 0.24
-	s.radial_segments = Scenery.detail_segments(6)
-	s.rings = Scenery.detail_rings(3)
+	if _puff_mesh_cache != null:
+		return _puff_mesh_cache
+	var s := Scenery.sphere(0.12, 6, 3)
+	# Cheap default material: _spawn_burst overrides it with the burst shader
+	# only when effects are allowed (via material_override, not mesh surgery,
+	# because the mesh is shared). vertex_color_use_as_albedo lets
+	# CPUParticles3D.color tint each particle (the shader reads the same COLOR).
 	var m := StandardMaterial3D.new()
 	m.albedo_color = Color(1, 1, 1, 0.85)
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.vertex_color_use_as_albedo = true
 	s.material = m
+	_puff_mesh_cache = s
 	return s

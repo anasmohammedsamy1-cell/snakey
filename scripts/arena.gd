@@ -127,7 +127,13 @@ func _make_burst(amount: int, lifetime: float, color: Color, vmin: float, vmax: 
 	var p := CPUParticles3D.new()
 	p.emitting = false
 	p.one_shot = true
-	p.amount = maxi(1, int(amount / 2)) if int(SettingsManager.get_setting("graphics_preset")) == SettingsManager.PRESET_LOW else amount
+	var preset := int(SettingsManager.get_setting("graphics_preset"))
+	if preset == SettingsManager.PRESET_POTATO:
+		p.amount = maxi(1, int(amount / 4))
+	elif preset == SettingsManager.PRESET_LOW:
+		p.amount = maxi(1, int(amount / 2))
+	else:
+		p.amount = amount
 	p.lifetime = lifetime
 	p.explosiveness = 1.0
 	p.spread = 180.0
@@ -195,6 +201,7 @@ func _apply_quality() -> void:
 		sun.light_energy = 1.2 if preset == SettingsManager.PRESET_HIGH else (1.08 if preset == SettingsManager.PRESET_MEDIUM else 1.0)
 	if env != null:
 		var effects := bool(SettingsManager.get_setting("effects"))
+		env.adjustment_enabled = preset != SettingsManager.PRESET_POTATO
 		env.fog_enabled = effects and preset == SettingsManager.PRESET_HIGH
 		env.glow_enabled = effects and preset == SettingsManager.PRESET_HIGH
 		if env.glow_enabled:

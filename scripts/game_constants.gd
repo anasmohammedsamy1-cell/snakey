@@ -59,6 +59,13 @@ const MAPS := [
 	{"key": "map_school", "kind": 1, "size_key": "size_large"},
 	{"key": "map_warehouse", "kind": 1, "size_key": "size_large"},
 	{"key": "map_museum", "kind": 1, "size_key": "size_large"},
+	{"key": "map_family_flat", "kind": 1, "size_key": "size_large"},
+	{"key": "map_plaza", "kind": 0, "size_key": "size_small"},
+	{"key": "map_mini_tiles", "kind": 0, "size_key": "size_small"},
+	{"key": "map_split_ring", "kind": 0, "size_key": "size_small"},
+	{"key": "map_ice_rink", "kind": 0, "size_key": "size_small"},
+	{"key": "map_conveyor_mill", "kind": 0, "size_key": "size_medium"},
+	{"key": "map_wind_tunnel", "kind": 0, "size_key": "size_large"},
 ]
 
 ## Rubber arm / dash tuning. The punch / grab strength depends on how long the button was held
@@ -132,6 +139,22 @@ const ARENA_PALETTE := [
 	Color(1.0, 0.56, 0.16),
 	Color(0.45, 0.9, 0.3),
 ]
+
+
+## Detail colour (screws, gaps and seams of the metal body). Index -1 keeps the
+## classic metal look; the customisation picker offers it plus every colour preset.
+const DEFAULT_DETAIL_COLOR := Color(0.72, 0.75, 0.8)
+
+static func detail_color_count() -> int:
+	return color_count() + 1
+
+
+static func get_detail_color(index: int) -> Color:
+	return DEFAULT_DETAIL_COLOR if index < 0 else get_color(index)
+
+
+static func is_detail_color_valid(index: int) -> bool:
+	return index == -1 or (index >= 0 and index < color_count())
 
 
 static func get_color(index: int) -> Color:

@@ -719,7 +719,7 @@ func _layout_profile_bar(view: Vector2, compact: bool) -> void:
 func _refresh_profile() -> void:
 	if _profile_name_label == null:
 		return
-	_profile_name_label.text = "%s: %s" % [GameManager.t("name"), SaveManager.player_name]
+	_profile_name_label.text = "%s: %s   (%d %s)" % [GameManager.t("name"), SaveManager.player_name, SaveManager.coins, GameManager.t("coins")]
 	_profile_color_label.text = GameConstants.get_color_name(SaveManager.color_index)
 	_profile_score_label.text = "%s: %d" % [GameManager.t("score"), SaveManager.rounds_won]
 	var color := GameConstants.get_color(SaveManager.color_index)
@@ -763,7 +763,8 @@ func _refresh_texts() -> void:
 
 
 func _apply_quality() -> void:
-	_ambient_enabled = int(SettingsManager.get_setting("graphics_preset")) != SettingsManager.PRESET_LOW
+	var preset := int(SettingsManager.get_setting("graphics_preset"))
+	_ambient_enabled = preset != SettingsManager.PRESET_LOW and preset != SettingsManager.PRESET_POTATO
 	_stop_ambient()
 	if _ambient_enabled:
 		if _intro_finished:

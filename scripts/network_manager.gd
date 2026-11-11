@@ -11,6 +11,7 @@ extends Node
 
 const GameConstants := preload("res://scripts/game_constants.gd")
 const NetUtils := preload("res://scripts/net_utils.gd")
+const AccessoriesLib := preload("res://scripts/accessories.gd")
 const Locale := preload("res://scripts/locale.gd")
 const LanDiscovery := preload("res://scripts/lan_discovery.gd")
 
@@ -67,7 +68,7 @@ func _ready() -> void:
 # Public API
 
 func get_local_info() -> Dictionary:
-	return {"name": SaveManager.player_name, "color": SaveManager.color_index, "ready": false, "score": 0, "team": 0}
+	return {"name": SaveManager.player_name, "color": SaveManager.color_index, "ready": false, "score": 0, "team": 0, "hat": SaveManager.equipped_hat, "detail": SaveManager.detail_color_index}
 
 
 ## Returns "" on success, otherwise a human readable error.
@@ -195,9 +196,13 @@ func update_local_info() -> void:
 		if players.has(1):
 			players[1]["name"] = SaveManager.player_name
 			players[1]["color"] = SaveManager.color_index
+			players[1]["hat"] = SaveManager.equipped_hat
+			players[1]["detail"] = SaveManager.detail_color_index
 		_broadcast_players()
 	else:
 		_rpc_update_info.rpc_id(1, SaveManager.player_name, SaveManager.color_index)
+		_rpc_set_hat.rpc_id(1, SaveManager.equipped_hat)
+		_rpc_set_detail.rpc_id(1, SaveManager.detail_color_index)
 
 
 func can_start() -> bool:
@@ -242,6 +247,7 @@ func start_match() -> void:
 
 ## Shared launch path for a validated lobby start and an explicit post-round rematch.
 func _launch_match() -> void:
+	_resolve_map_votes()
 	var humans: Array = []
 	for id in players.keys():
 		humans.append(int(players[id].get("team", 0)))
@@ -258,12 +264,83 @@ func return_to_lobby() -> void:
 	if not online or not is_host:
 		return
 	match_in_progress = false
+	_rotate_map()
 	_broadcast_players()
 	_rpc_return_to_lobby.rpc()
 	_on_return_to_lobby()
 
 
 ## Host only. Every setting is validated here (clients cannot call this: it is not an RPC).
+## Host: automatic map rotation. After a match the next map of the mode is selected (setting "rotate_maps"),
+## and the old votes are dropped because they belonged to the finished match.
+func _rotate_map() -> void:
+	map_votes.clear()
+	_refresh_vote_tally()
+	if bool(SettingsManager.get_setting("rotate_maps")):
+		cfg["map"] = GameManager.next_map_id(int(cfg.get("mode", 0)), int(cfg.get("map", 0)))
+
+
+## Map votes (host only): every player, host included, has ONE vote. The most voted map is used at match start
+## (ties are drawn at random). cfg["vote_tally"] = {map_id: count} is replicated so every lobby can show it.
+var map_votes: Dictionary = {}
+
+
+## Any player (host or client) votes for a map. Clients only send a request; the host validates it.
+func cast_map_vote(map_id: int) -> void:
+	if not online:
+		return
+	if is_host:
+		_host_vote(1, map_id)
+	else:
+		_rpc_vote_map.rpc_id(1, map_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_vote_map(map_id: int) -> void:
+	if not is_host:
+		return
+	_host_vote(multiplayer.get_remote_sender_id(), map_id)
+
+
+func _host_vote(voter: int, map_id: int) -> void:
+	if match_in_progress or not (voter == 1 or players.has(voter)):
+		return
+	if not GameConstants.maps_for_mode(int(cfg.get("mode", 0))).has(map_id):
+		return
+	map_votes[voter] = map_id
+	_refresh_vote_tally()
+	_resolve_map_votes()                               # the lobby always shows the map that is currently winning
+	_broadcast_players()
+
+
+func _refresh_vote_tally() -> void:
+	var tally := {}
+	for v in map_votes.keys():
+		var m := int(map_votes[v])
+		tally[m] = int(tally.get(m, 0)) + 1
+	cfg["vote_tally"] = tally
+
+
+## Host: the winner of the vote becomes the map of the match.
+func _resolve_map_votes() -> void:
+	if map_votes.is_empty():
+		return
+	var tally: Dictionary = cfg.get("vote_tally", {})
+	var best := 0
+	for m in tally.keys():
+		best = maxi(best, int(tally[m]))
+	var winners: Array = []
+	for m in tally.keys():
+		if int(tally[m]) == best:
+			winners.append(int(m))
+	if winners.has(int(cfg.get("map", 0))):
+		return                                         # the map on screen is already a winner: keep it (no flicker)
+	if not winners.is_empty():
+		var chosen: int = winners[randi() % winners.size()]
+		if GameConstants.maps_for_mode(int(cfg.get("mode", 0))).has(chosen):
+			cfg["map"] = chosen
+
+
 func set_cfg_value(key: String, value: Variant) -> void:
 	if not online or not is_host or match_in_progress:
 		return
@@ -274,9 +351,13 @@ func set_cfg_value(key: String, value: Variant) -> void:
 			if not allowed.has(int(cfg.get("map", 0))):
 				cfg["map"] = int(allowed[0])
 			cfg["round_time"] = GameConstants.default_round_time(int(cfg["mode"]))
+			map_votes.clear()                          # a vote only makes sense inside the mode it was cast for
+			_refresh_vote_tally()
 		"map":
 			if GameConstants.maps_for_mode(int(cfg.get("mode", 0))).has(int(value)):
 				cfg["map"] = int(value)
+				map_votes[1] = int(value)              # the host's pick is the host's vote
+				_refresh_vote_tally()
 		"bots":
 			cfg["bots"] = clampi(int(value), 0, maxi(GameConstants.MAX_TOTAL - players.size(), 0))
 		"round_time":
@@ -320,6 +401,7 @@ func rematch() -> void:
 		return
 	if int(cfg.get("mode", 0)) == GameConstants.MODE_HIDE:
 		cfg["hider_team"] = 1 - int(cfg.get("hider_team", 0))
+	_rotate_map()
 	_launch_match()
 
 
@@ -440,6 +522,8 @@ func _on_peer_disconnected(id: int) -> void:
 	if is_host and players.has(id):
 		var pname := str(players[id]["name"])
 		players.erase(id)
+		if map_votes.erase(id):
+			_refresh_vote_tally()
 		_broadcast_players()
 		player_left.emit(id, pname)
 		status_changed.emit(GameManager.t("left") % pname)
@@ -450,7 +534,9 @@ func _on_connected_to_server() -> void:
 		return
 	# ENet connected is not the same as an accepted lobby registration.
 	# Keep the timeout and busy state until the authoritative list contains us.
-	_rpc_register.rpc_id(1, SaveManager.player_name, SaveManager.color_index)
+	_rpc_register.rpc_id(1, SaveManager.player_name, SaveManager.color_index, SaveManager.detail_color_index)
+	_rpc_set_hat.rpc_id(1, SaveManager.equipped_hat)      # same reliable channel: arrives after the registration
+	_rpc_set_detail.rpc_id(1, SaveManager.detail_color_index)
 	status_changed.emit(GameManager.t("registering"))
 
 
@@ -476,7 +562,7 @@ func _on_server_disconnected() -> void:
 # RPCs: client -> host (any_peer, validated on the host)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _rpc_register(pname: String, color: int) -> void:
+func _rpc_register(pname: String, color: int, detail: int = -1) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -506,7 +592,7 @@ func _rpc_register(pname: String, color: int) -> void:
 			count_a += 1
 		else:
 			count_b += 1
-	players[id] = {"name": clean, "color": posmod(color, GameConstants.color_count()), "ready": false, "score": 0, "team": 0 if count_a <= count_b else 1}
+	players[id] = {"name": clean, "color": posmod(color, GameConstants.color_count()), "ready": false, "score": 0, "team": 0 if count_a <= count_b else 1, "detail": _sanitize_detail(detail)}
 	_broadcast_players()
 	player_joined.emit(id, clean)
 	status_changed.emit(GameManager.t("joined") % clean)
@@ -530,6 +616,33 @@ func _rpc_update_info(pname: String, color: int) -> void:
 	if players.has(id):
 		players[id]["name"] = SaveManager.sanitize_name(pname)
 		players[id]["color"] = posmod(color, GameConstants.color_count())
+		_broadcast_players()
+
+
+## Cosmetic only: the host just checks that the index is a known detail colour
+## (-1 = classic metal, 0..n = the colour presets).
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_set_detail(detail: int) -> void:
+	if not multiplayer.is_server() or match_in_progress:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	if players.has(id):
+		players[id]["detail"] = _sanitize_detail(detail)
+		_broadcast_players()
+
+
+func _sanitize_detail(detail: int) -> int:
+	return detail if GameConstants.is_detail_color_valid(detail) else -1
+
+
+## Cosmetic only: the host just checks that the id is a known accessory (ownership lives in the player's own save).
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_set_hat(hat: String) -> void:
+	if not multiplayer.is_server() or match_in_progress:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	if players.has(id):
+		players[id]["hat"] = hat if AccessoriesLib.is_valid(hat) else ""
 		_broadcast_players()
 
 

@@ -23,7 +23,7 @@ func _ready() -> void:
 	check(env.sky.sky_material is ProceduralSkyMaterial, "medium preset uses the procedural sky")
 	Scenery.configure_environment(env, SettingsManager.PRESET_HIGH)
 	check(env.sky.sky_material is PanoramaSkyMaterial, "high preset uses the imported HDRI sky")
-	check(is_equal_approx(env.adjustment_saturation, 1.32) and is_equal_approx(env.adjustment_contrast, 1.2), "shared saturation and contrast grade is preserved across presets")
+	check(is_equal_approx(env.adjustment_saturation, 1.45) and is_equal_approx(env.adjustment_contrast, 1.34), "shared saturation and contrast grade is preserved across presets")
 	SettingsManager.settings = saved
 	SettingsManager.apply_all()
 	SettingsManager.save_settings()

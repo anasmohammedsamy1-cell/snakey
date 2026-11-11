@@ -22,7 +22,11 @@ func run_test() -> void:
 	get_tree().root.add_child(menu)
 	await get_tree().process_frame
 	check(menu._bg != null and menu._bg.texture != null, "menu uses the new background artwork")
-	check(menu._menu_buttons.size() == 9, "menu keeps all nine actions available")
+	var expected_actions := ["play", "multiplayer", "tutorial_title", "practice", "customize", "settings", "how_to_play"]
+	var actual_actions: Array[String] = []
+	for button in menu._menu_buttons:
+		actual_actions.append(str(button.get_meta("i18n_key", "")))
+	check(actual_actions == expected_actions, "menu keeps all seven actions available")
 	check(not menu._ambient_enabled, "low menu keeps ambient animation disabled")
 	SettingsManager.apply_preset(SettingsManager.PRESET_HIGH)
 	await get_tree().process_frame

@@ -70,21 +70,23 @@ func run_test() -> void:
 	picker.picked.connect(on_picked)
 	vp.add_child(picker)
 	await get_tree().process_frame
-	check(picker.layout_direction == Control.LAYOUT_DIRECTION_RTL and picker._grid.columns == 1, "map picker is RTL and single-column when narrow")
+	check(picker.layout_direction == Control.LAYOUT_DIRECTION_RTL and picker._strip.get_child_count() == 5, "map picker is RTL and lists every map in the carousel strip")
 	vp.size = Vector2i(1280, 720)
 	await get_tree().process_frame
 	await get_tree().process_frame
-	check(picker._grid.columns == 3, "map picker adjusts columns after resize")
-	var card = picker._grid.get_child(2)
-	var hit: Button = card.get_child(card.get_child_count() - 1)
-	hit.pressed.emit()
-	check(selected == 13, "map card sends selected map")
+	check(picker._select_btn != null and picker._count_label.text == "3 / 5", "map picker keeps the selected map and select action after resize")
+	var card: Button = picker._strip.get_child(0)
+	card.pressed.emit()
+	await get_tree().process_frame
+	check(picker._index == 0, "map picker strip jumps to the chosen map")
+	picker._select_btn.pressed.emit()
+	check(selected == 5, "map card sends selected map")
 	picker.queue_free()
 	await get_tree().process_frame
 	var result = load("res://scenes/ui/results_screen.tscn").instantiate()
 	vp.add_child(result)
 	await get_tree().process_frame
-	result.show_results([{"rank": 1, "color": 0, "name": "لاعب", "points": 3, "total": 3}], "فائز", false)
+	result.show_results([{"id": 0, "rank": 1, "color": 0, "name": "لاعب", "points": 3, "total": 3}], "فائز", false)
 	check(result.layout_direction == Control.LAYOUT_DIRECTION_RTL, "results screen uses RTL")
 	result.queue_free()
 	await get_tree().process_frame
